@@ -43,7 +43,7 @@ final class PixelBufferSink: NSObject, FlutterTexture {
 
 /// 通用事件通道转发
 final class PassthroughStreamHandler: NSObject, FlutterStreamHandler {
-    var onListen: ((FlutterEventSink) -> Void)?
+    var onListen: ((@escaping FlutterEventSink) -> Void)?
     var onCancel: (() -> Void)?
 
     func onListen(withArguments arguments: Any?,
@@ -214,7 +214,7 @@ class HinterCameraPlugin: NSObject, FlutterPlugin {
         }
     }
 
-    private func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
+    func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
         switch call.method {
         case "start":
             let front = (call.arguments as? [String: Any])?["front"] as? Bool ?? true
@@ -271,16 +271,13 @@ class HinterCameraPlugin: NSObject, FlutterPlugin {
                 self.ciContext = CIContext(options: [.cacheIntermediates: false])
             }
             if self.combineKernel == nil {
-                do {
-                    let device = MTLCreateSystemDefaultDevice()
-                    let lib = try device?.makeLibrary(source: beautyKernelSource,
-                                                      options: nil)
-                    let data = try lib?.makeDispatchData()
-                    self.combineKernel = try CIColorKernel(
-                        functionName: "beautyCombine",
-                        fromMetalLibraryData: (data ?? DispatchData()) as Data)
-                } catch {
-                    self.emitError("美颜着色器初始化失败: \(error)")
+                // 运行期编译 Metal 核;失败时 combineKernel 保持 nil,
+                // 渲染退化为直通(预览/录制仍可用)
+                self.combineKernel = CIColorKernel(
+                    functionName: "beautyCombine",
+                    fromMetalSource: beautyKernelSource)
+                if self.combineKernel == nil {
+                    self.emitError("美颜着色器初始化失败")
                 }
             }
 
@@ -404,7 +401,7 @@ class HinterCameraPlugin: NSObject, FlutterPlugin {
             self.finishWriter()
             self.teardownSession()
             if let id = self.sink.map({ _ in self.textureId }), id >= 0 {
-                self.registrar?.textures().unregister(id)
+                self.registrar?.textures().unregisterTexture(id)
             }
             self.sink = nil
             self.textureId = -1
@@ -440,7 +437,7 @@ class HinterCameraPlugin: NSObject, FlutterPlugin {
     private func buildWriter(path: String) throws {
         let url = URL(fileURLWithPath: path)
         try? FileManager.default.removeItem(at: url)
-        let w = AVAssetWriter(outputURL: url, fileType: .mp4)
+        let w = try AVAssetWriter(outputURL: url, fileType: .mp4)
         let width = max(lastVideoW, 720)
         let height = max(lastVideoH, 1280)
 
@@ -708,7 +705,7 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
               let desc = CMSampleBufferGetFormatDescription(sampleBuffer) else { return }
         do {
             if audioConverter == nil {
-                let inFormat = AVAudioFormat(cmAudioFormatDesc: desc)!
+                let inFormat = AVAudioFormat(cmAudioFormatDescription: desc)!
                 let outFormat = AVAudioFormat(commonFormat: .pcmFormatInt16,
                                               sampleRate: 16000,
                                               channels: 1,
@@ -720,7 +717,11 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
             guard let converter = audioConverter, let out = pcmOut else { return }
 
             var blockBuffer: CMBlockBuffer?
-            var bufferList = AudioBufferList(mNumberBuffers: 0)
+            var bufferList = AudioBufferList(
+                mNumberBuffers: 1,
+                mBuffers: AudioBuffer(mNumberChannels: 1,
+                                      mDataByteSize: 0,
+                                      mData: nil))
             CMSampleBufferGetAudioBufferListWithRetainedBlockBuffer(
                 sampleBuffer,
                 bufferListSizeNeededOut: nil,
@@ -731,7 +732,7 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
                 flags: 0,
                 blockBufferOut: &blockBuffer)
 
-            let inFormat = AVAudioFormat(cmAudioFormatDesc: desc)!
+            let inFormat = AVAudioFormat(cmAudioFormatDescription: desc)!
             guard let inBuf = AVAudioPCMBuffer(
                 pcmFormat: inFormat,
                 bufferListNoCopy: &bufferList,
