@@ -1,0 +1,43 @@
+name: iOS Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.47.2
+          channel: stable
+          cache: true
+
+      - name: Install pods
+        run: |
+          cd ios
+          pod repo update
+          pod install --repo-update
+        continue-on-error: true
+
+      - name: Build iOS (unsigned)
+        run: flutter build ios --release --no-codesign
+
+      - name: Package unsigned IPA
+        run: |
+          mkdir -p Payload
+          cp -r build/ios/iphoneos/Runner.app Payload/
+          zip -qr hinter-unsigned.ipa Payload
+          ls -lh hinter-unsigned.ipa
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hinter-ios-unsigned
+          path: hinter-unsigned.ipa
+          retention-days: 14
