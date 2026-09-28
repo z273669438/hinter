@@ -270,16 +270,6 @@ class HinterCameraPlugin: NSObject, FlutterPlugin {
             if self.ciContext == nil {
                 self.ciContext = CIContext(options: [.cacheIntermediates: false])
             }
-            if self.combineKernel == nil {
-                // 运行期编译 Metal 核;失败时 combineKernel 保持 nil,
-                // 渲染退化为直通(预览/录制仍可用)
-                self.combineKernel = CIColorKernel(
-                    functionName: "beautyCombine",
-                    fromMetalSource: beautyKernelSource)
-                if self.combineKernel == nil {
-                    self.emitError("美颜着色器初始化失败")
-                }
-            }
 
             do {
                 try self.buildSession(front: front)
@@ -643,29 +633,29 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
             blurred = b.cropped(to: extent)
         }
 
-        // 2) 边缘保留合成 + 肤色美白红润
-        if let kernel = combineKernel, let b = blurred {
-            let out = kernel.apply(
-                extent: extent,
-                roiCallback: { _, _ in CGRect.infinite },
-                arguments: [
-                    ci,
-                    b,
-                    NSNumber(value: beauty.smooth),
-                    NSNumber(value: beauty.whiten),
-                    NSNumber(value: beauty.ruddy),
-                    NSNumber(value: beauty.brightness),
-                    NSNumber(value: 0.6 + beauty.saturation * 0.8),
-                    NSNumber(value: beauty.slim),
-                    CIVector(x: extent.width, y: extent.height),
-                    CIVector(x: CGFloat(faceEllipse.x),
-                             y: CGFloat(faceEllipse.y),
-                             z: CGFloat(faceEllipse.z),
-                             w: CGFloat(faceEllipse.w)),
-                    NSNumber(value: faceOn ? 1.0 : 0.0)
-                ])
-            if let o = out as? CIImage { ci = o }
+        // 2) 磨皮:边缘保留合成(经典 max/min 组合,去暗斑提亮瑕疵,
+        //    保留轮廓细节);随后 gamma 美白、CITemperatureAndTint 红润、
+        //    CIColorControls 亮度/饱和度。iOS 端瘦脸暂未启用(slim 忽略)
+        if let b = blurred, beauty.smooth > 0.01 {
+            let maxed = ci.applyingFilter("CIMaximumCompositing",
+                                          parameters: [kCIInputImageKey: b])
+            let minned = maxed.applyingFilter("CIMinimumCompositing",
+                                              parameters: [kCIInputImageKey: ci])
+            ci = minned.cropped(to: extent)
         }
+        if beauty.whiten > 0.01 {
+            ci = ci.applyingFilter("CIGammaAdjust", parameters: [
+                "inputPower": NSNumber(value: 1.0 - 0.28 * beauty.whiten)])
+        }
+        if beauty.ruddy > 0.01 {
+            ci = ci.applyingFilter("CITemperatureAndTint", parameters: [
+                "inputNeutral": CIVector(x: 6500 - 400 * CGFloat(beauty.ruddy),
+                                         y: 100),
+                "inputTargetNeutral": CIVector(x: 6500, y: 100)])
+        }
+        ci = ci.applyingFilter("CIColorControls", parameters: [
+            kCIInputBrightnessKey: NSNumber(value: beauty.brightness * 0.25),
+            kCIInputSaturationKey: NSNumber(value: 0.78 + beauty.saturation * 0.5)])
 
         // 3) 渲染到输出缓冲,交给 Flutter 预览
         if let sink = sink, let ctx = ciContext, textureId >= 0,
@@ -705,7 +695,7 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
               let desc = CMSampleBufferGetFormatDescription(sampleBuffer) else { return }
         do {
             if audioConverter == nil {
-                let inFormat = AVAudioFormat(cmAudioFormatDescription: desc)!
+                let inFormat = AVAudioFormat(cmAudioFormatDescription: desc)
                 let outFormat = AVAudioFormat(commonFormat: .pcmFormatInt16,
                                               sampleRate: 16000,
                                               channels: 1,
@@ -732,7 +722,7 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
                 flags: 0,
                 blockBufferOut: &blockBuffer)
 
-            let inFormat = AVAudioFormat(cmAudioFormatDescription: desc)!
+            let inFormat = AVAudioFormat(cmAudioFormatDescription: desc)
             guard let inBuf = AVAudioPCMBuffer(
                 pcmFormat: inFormat,
                 bufferListNoCopy: &bufferList,
