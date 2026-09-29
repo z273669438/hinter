@@ -54,8 +54,8 @@ jobs:
           [ -s /tmp/errs.txt ] || tail -80 /tmp/build.log > /tmp/errs.txt
           python3 - <<'PYX'
           import json, os, urllib.request
-          body = open('/tmp/errs.txt').read()[:5000]
-          data = json.dumps({'title': 'build-errors run' + os.environ['GITHUB_RUN_NUMBER'],
+          body = open('/tmp/errs.txt').read()[-5000:]
+          data = json.dumps({'title': 'BERR run' + os.environ['GITHUB_RUN_NUMBER'] + ' sha' + os.environ['GITHUB_SHA'][:7],
                              'body': body}).encode()
           req = urllib.request.Request(
             'https://api.github.com/repos/' + os.environ['GITHUB_REPOSITORY'] + '/issues',
