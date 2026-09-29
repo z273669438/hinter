@@ -20,9 +20,15 @@ jobs:
           cache: true
 
       - name: Build iOS (unsigned)
-        run: flutter build ios --release --no-codesign
+        id: build
+        continue-on-error: true
+        run: |
+          set +e
+          flutter build ios --release --no-codesign 2>&1 | tee /tmp/build.log
+          exit ${PIPESTATUS[0]}
 
       - name: Package unsigned IPA
+        if: steps.build.outcome == 'success'
         run: |
           mkdir -p Payload
           cp -r build/ios/iphoneos/Runner.app Payload/
@@ -30,9 +36,22 @@ jobs:
           ls -lh hinter-ios-unsigned.ipa
 
       - name: Publish as GitHub Release
+        if: steps.build.outcome == 'success'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ios-test-1
           name: Hinter iOS 测试版 1
           body: 未签名 ipa,Sideloadly 签名安装
           files: hinter-ios-unsigned.ipa
+
+      - name: Push build errors to diag branch
+        if: steps.build.outcome == 'failure'
+        run: |
+          grep -iE "error:|fatal|❌" /tmp/build.log | head -80 > /tmp/errs.txt || true
+          [ -s /tmp/errs.txt ] || tail -100 /tmp/build.log > /tmp/errs.txt
+          cd /tmp && git init diag -q && cd diag
+          git config user.email "ci@hinter.local" && git config user.name "ci"
+          git checkout --orphan diag -q
+          cp /tmp/errs.txt build-errors.txt
+          git add -A && git commit -m "build errors $GITHUB_RUN_NUMBER" -q
+          git push -f "https://x-access-token:${GITHUB_TOKEN}@github.com/$GITHUB_REPOSITORY.git" diag:diag
