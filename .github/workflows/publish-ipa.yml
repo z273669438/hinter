@@ -10,19 +10,17 @@ jobs:
       contents: write
       actions: read
     steps:
-      - name: Download build artifact (from run 3)
-        uses: dawidd6/action-download-artifact@v7
-        with:
-          run_id: 36445107974
-          name: hinter-ios-unsigned
-          path: art
-
-      - name: Extract ipa
+      - name: Download artifact zip via API
         run: |
-          cd art
-          unzip -o hinter-unsigned.zip
-          mv hinter-unsigned.ipa ../hinter-ios-unsigned.ipa
-          ls -lh ../hinter-ios-unsigned.ipa
+          set -e
+          ART=$(curl -s -H "Authorization: Bearer $GITHUB_TOKEN" \
+            https://api.github.com/repos/$GITHUB_REPOSITORY/actions/runs/36445107974/artifacts | \
+            python3 -c "import json,sys; print(json.load(sys.stdin)['artifacts'][0]['archive_download_url'])")
+          curl -sL -H "Authorization: Bearer $GITHUB_TOKEN" "$ART" -o art.zip
+          ls -lh art.zip
+          unzip -o art.zip
+          echo "---- extracted ----"
+          find . -maxdepth 1 -type f
 
       - name: Publish as GitHub Release
         uses: softprops/action-gh-release@v2
@@ -30,4 +28,4 @@ jobs:
           tag_name: ios-test-1
           name: Hinter iOS 测试版 1
           body: 未签名 ipa,Sideloadly 签名安装
-          files: hinter-ios-unsigned.ipa
+          files: hinter-unsigned.ipa
