@@ -40,13 +40,8 @@ jobs:
         env:
           TITLE: "publish-diag run${{ github.run_number }} dl=${{ steps.dl.outcome }}"
         run: |
-          python3 - <<'PYEOF'
-          import json, os
-          body = open('/tmp/step.log', errors='ignore').read()[-6000:]
-          json.dump({'title': os.environ['TITLE'],
-                     'body': '```\n' + body + '\n```'},
-                    open('/tmp/payload.json', 'w'))
-          PYEOF
+          python3 -c "import json,os;b=open('/tmp/step.log',errors='ignore').read()[-6000:];json.dump({'title':os.environ['TITLE'],'body':'\`\`\`'+b+'\`\`\`'},open('/tmp/payload.json','w'))"
+          cat /tmp/payload.json | head -c 200
           curl -sS -X POST -H "Authorization: Bearer $GITHUB_TOKEN" \
             -H "Accept: application/vnd.github+json" \
             https://api.github.com/repos/$GITHUB_REPOSITORY/issues \
