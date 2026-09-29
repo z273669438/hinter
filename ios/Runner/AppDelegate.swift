@@ -734,9 +734,9 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
             // 第二张图必须放 kCIInputImage2Key——此前放错 key 导致
             // 合成 extent=(0,0,0,0) → 每帧渲染空图 → 全黑屏
             let maxed = ci.applyingFilter("CIMaximumCompositing",
-                                          parameters: [kCIInputImage2Key: b])
+                                          parameters: ["inputImage2": b])
             let minned = maxed.applyingFilter("CIMinimumCompositing",
-                                              parameters: [kCIInputImage2Key: ci])
+                                              parameters: ["inputImage2": ci])
             ci = minned.cropped(to: extent)
         }
         if beauty.whiten > 0.01 {
