@@ -1,0 +1,38 @@
+name: iOS Build and Release
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-14
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.47.2
+          channel: stable
+          cache: true
+
+      - name: Build iOS (unsigned)
+        run: flutter build ios --release --no-codesign
+
+      - name: Package unsigned IPA
+        run: |
+          mkdir -p Payload
+          cp -r build/ios/iphoneos/Runner.app Payload/
+          zip -qr hinter-ios-unsigned.ipa Payload
+          ls -lh hinter-ios-unsigned.ipa
+
+      - name: Publish as GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ios-test-1
+          name: Hinter iOS 测试版 1
+          body: 未签名 ipa,Sideloadly 签名安装
+          files: hinter-ios-unsigned.ipa
