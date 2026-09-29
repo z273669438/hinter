@@ -9,23 +9,45 @@ jobs:
     permissions:
       contents: write
       actions: read
+      issues: write
     steps:
       - name: Download artifact zip via API
+        id: dl
+        continue-on-error: true
         run: |
-          set -e
-          ART=$(curl -s -H "Authorization: Bearer $GITHUB_TOKEN" \
+          exec > /tmp/step.log 2>&1
+          set -x
+          ART=$(curl -sS -H "Authorization: Bearer $GITHUB_TOKEN" \
             https://api.github.com/repos/$GITHUB_REPOSITORY/actions/runs/36445107974/artifacts | \
             python3 -c "import json,sys; print(json.load(sys.stdin)['artifacts'][0]['archive_download_url'])")
-          curl -sL -H "Authorization: Bearer $GITHUB_TOKEN" "$ART" -o art.zip
+          echo "ART=$ART"
+          curl -sSL -H "Authorization: Bearer $GITHUB_TOKEN" "$ART" -o art.zip
           ls -lh art.zip
           unzip -o art.zip
-          echo "---- extracted ----"
           find . -maxdepth 1 -type f
 
       - name: Publish as GitHub Release
+        if: steps.dl.outcome == 'success'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ios-test-1
           name: Hinter iOS 测试版 1
           body: 未签名 ipa,Sideloadly 签名安装
           files: hinter-unsigned.ipa
+
+      - name: Report step log as issue
+        if: always()
+        env:
+          TITLE: "publish-diag run${{ github.run_number }} dl=${{ steps.dl.outcome }}"
+        run: |
+          python3 - <<'PYEOF'
+          import json, os
+          body = open('/tmp/step.log', errors='ignore').read()[-6000:]
+          json.dump({'title': os.environ['TITLE'],
+                     'body': '```\n' + body + '\n```'},
+                    open('/tmp/payload.json', 'w'))
+          PYEOF
+          curl -sS -X POST -H "Authorization: Bearer $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/$GITHUB_REPOSITORY/issues \
+            -d @/tmp/payload.json
