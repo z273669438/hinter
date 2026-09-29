@@ -279,6 +279,12 @@ class HinterCameraPlugin: NSObject, FlutterPlugin {
     private var lastFaceDetect: CFTimeInterval = 0
     private var faceBusy = false
     private var renderCount: Int64 = 0
+    private var audioDbg: Int64 = 0
+    /// 瘦脸液化中心的平滑值(每帧 EMA,消除 Vision 10fps 阶跃跳动)
+    /// (Swift 禁止 extension 声明存储属性,必须放主类)
+    private var slimCx: Double = -1
+    private var slimCy: Double = -1
+    private var slimRx: Double = 0
     /// 双通道诊断:NSLog + 沙盒文件(iOS26 上 os_log 经侧载签名可能不可见,
 
     static func register(with registrar: FlutterPluginRegistrar) {
@@ -723,11 +729,6 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
         }
     }
 
-    /// 瘦脸液化中心的平滑值(每帧 EMA,消除 Vision 10fps 阶跃跳动)
-    private var slimCx: Double = -1
-    private var slimCy: Double = -1
-    private var slimRx: Double = 0
-
     /// Vision 人脸检测(限流 ~10fps,后台队列),结果写入 faceEllipse/faceOn
     private func detectFace(_ pb: CVPixelBuffer) {
         let now = CACurrentMediaTime()
@@ -880,8 +881,6 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
     private func recording_wantsVideo() -> Bool {
         return writerVideo?.isReadyForMoreMediaData ?? false
     }
-
-    private var audioDbg: Int64 = 0
 
     private func handleAudio(_ sampleBuffer: CMSampleBuffer) {
         audioDbg += 1
