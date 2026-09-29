@@ -731,12 +731,13 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
         //    CIColorControls 亮度/饱和度。iOS 端瘦脸暂未启用(slim 忽略)
         if let b = blurred, beauty.smooth > 0.01 {
             // applyingFilter 的接收者自动占 inputImage,
-            // 第二张图必须放 kCIInputImage2Key——此前放错 key 导致
-            // 合成 extent=(0,0,0,0) → 每帧渲染空图 → 全黑屏
+            // 合成协议的第二张图键名是 inputBackgroundImage
+            // (inputImage2 不存在会抛 forUndefinedKey 崩溃;
+            //  全用 inputImage 则背景缺省 extent 归零 → 黑屏)
             let maxed = ci.applyingFilter("CIMaximumCompositing",
-                                          parameters: ["inputImage2": b])
+                                          parameters: ["inputBackgroundImage": b])
             let minned = maxed.applyingFilter("CIMinimumCompositing",
-                                              parameters: ["inputImage2": ci])
+                                              parameters: ["inputBackgroundImage": ci])
             ci = minned.cropped(to: extent)
         }
         if beauty.whiten > 0.01 {
