@@ -195,8 +195,7 @@ class HinterCameraPlugin: NSObject, FlutterPlugin {
     /// 文件通道保证可读;Documents/hinter_diag.log)
     func diag(_ msg: String) {
         NSLog("[HinterCam] %@", msg)
-        let line = "\(Date()): \(msg)
-"
+        let line = "\(Date()): \(msg)" + "\n"
         let dir = NSSearchPathForDirectoriesInDomains(.documentDirectory,
             .userDomainMask, true).first
         if let dir = dir {
