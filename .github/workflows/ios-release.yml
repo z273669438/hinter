@@ -8,6 +8,7 @@ jobs:
     runs-on: macos-14
     permissions:
       contents: write
+      issues: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -44,14 +45,22 @@ jobs:
           body: 未签名 ipa,Sideloadly 签名安装
           files: hinter-ios-unsigned.ipa
 
-      - name: Push build errors to diag branch
+      - name: Report build errors as issue
         if: steps.build.outcome == 'failure'
+        env:
+          GHT: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          grep -iE "error:|fatal|❌" /tmp/build.log | head -80 > /tmp/errs.txt || true
-          [ -s /tmp/errs.txt ] || tail -100 /tmp/build.log > /tmp/errs.txt
-          cd /tmp && git init diag -q && cd diag
-          git config user.email "ci@hinter.local" && git config user.name "ci"
-          git checkout --orphan diag -q
-          cp /tmp/errs.txt build-errors.txt
-          git add -A && git commit -m "build errors $GITHUB_RUN_NUMBER" -q
-          git push -f "https://x-access-token:${GITHUB_TOKEN}@github.com/$GITHUB_REPOSITORY.git" diag:diag
+          grep -iE "error:|fatal" /tmp/build.log | head -60 > /tmp/errs.txt || true
+          [ -s /tmp/errs.txt ] || tail -80 /tmp/build.log > /tmp/errs.txt
+          python3 - <<'PYX'
+          import json, os, urllib.request
+          body = open('/tmp/errs.txt').read()[:5000]
+          data = json.dumps({'title': 'build-errors run' + os.environ['GITHUB_RUN_NUMBER'],
+                             'body': body}).encode()
+          req = urllib.request.Request(
+            'https://api.github.com/repos/' + os.environ['GITHUB_REPOSITORY'] + '/issues',
+            data=data,
+            headers={'Authorization': 'Bearer ' + os.environ['GHT'],
+                     'Accept': 'application/vnd.github+json'})
+          print('issue http', urllib.request.urlopen(req).status)
+          PYX
