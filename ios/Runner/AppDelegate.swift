@@ -83,6 +83,54 @@ final class PassthroughStreamHandler: NSObject, FlutterStreamHandler {
     }
 }
 
+/// v7 诊断:把 CI 图像落盘为 PNG(Documents)
+func ciWrite(_ image: CIImage, ctx: CIContext, name: String) {
+    let ext = image.extent.isFinite ? image.extent :
+        CGRect(x: 0, y: 0, width: max(image.extent.width, 1),
+               height: max(image.extent.height, 1))
+    guard let cg = ctx.createCGImage(image, from: ext) else {
+        diag("createCGImage FAILED extent=\(image.extent)")
+        return
+    }
+    let dir = NSSearchPathForDirectoriesInDomains(.documentDirectory,
+        .userDomainMask, true).first!
+    let url = URL(fileURLWithPath: dir).appendingPathComponent(name)
+    if let data = try? PNGRep.repr(cg) {
+        try? data.write(to: url)
+        diag("saved \(name) \(data.count)b extent=\(image.extent)")
+    } else {
+        diag("PNG encode failed extent=\(image.extent)")
+    }
+}
+
+enum PNGRep {
+    static func repr(_ cg: CGImage) throws -> Data {
+        let ds = CGImageDestinationCreateWithData(
+            NSMutableData() as MutableData, "public.png" as CFString, 1, nil)!
+        CGImageDestinationAddImage(ds, cg, nil)
+        CGImageDestinationFinalize(ds)
+        return (ds as! NSMutableData) as Data
+    }
+}
+
+/// 填纯红(BGRA)
+func fillRed(_ b: CVPixelBuffer) {
+    CVPixelBufferLockBaseAddress(b, [])
+    defer { CVPixelBufferUnlockBaseAddress(b, []) }
+    guard let base = CVPixelBufferGetBaseAddress(b) else { return }
+    let stride = CVPixelBufferGetBytesPerRow(b)
+    let w = CVPixelBufferGetWidth(b), h = CVPixelBufferGetHeight(b)
+    base.withMemoryRebound(to: UInt8.self, capacity: stride * h) { p in
+        for y in 0..<h {
+            let row = p + y * stride
+            for x in 0..<w {
+                row[x * 4] = 0; row[x * 4 + 1] = 0
+                row[x * 4 + 2] = 255; row[x * 4 + 3] = 255
+            }
+        }
+    }
+}
+
 struct BeautyParams {
     var smooth = 0.5
     var whiten = 0.3
@@ -702,11 +750,21 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
         // 3) 渲染到输出缓冲,交给 Flutter 预览
         renderCount += 1
         if renderCount == 1 || renderCount % 150 == 0 {
-            diag("render #\(renderCount) tex=\(textureId) buf=\(makeBuffer() == nil ? "NIL" : "ok")")
+            diag("render #\(renderCount) tex=\(textureId) ciExt=\(ci.extent)")
         }
         if let sink = sink, let ctx = ciContext, textureId >= 0,
            let outBuf = makeBuffer() {
-            ctx.render(ci, to: outBuf)
+            // v7 诊断:前 60 帧填纯红(检验引擎→屏幕通道),
+            // 第 61 帧存 CI 真实渲染结果为 PNG(检验渲染内容)
+            if renderCount <= 60 {
+                fillRed(outBuf)
+                if renderCount == 60 {
+                    ciWrite(ci, ctx: ctx, name: "first_ci_frame.png")
+                    diag("red phase done, CI png saved")
+                }
+            } else {
+                ctx.render(ci, to: outBuf)
+            }
             sink.present(outBuf)
             let tid = textureId
             let reg = registrar
