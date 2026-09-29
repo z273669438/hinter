@@ -23,6 +23,25 @@ import Vision
 // ============================================================================
 
 /// 把最新渲染帧交给 Flutter 引擎
+/// 文件通道保证可读;Documents/hinter_diag.log)
+func diag(_ msg: String) {
+    NSLog("[HinterCam] %@", msg)
+    let line = "\(Date()): \(msg)" + "\n"
+    let dir = NSSearchPathForDirectoriesInDomains(.documentDirectory,
+        .userDomainMask, true).first
+    if let dir = dir {
+        let f = URL(fileURLWithPath: dir).appendingPathComponent("hinter_diag.log")
+        if let h = try? FileHandle(forWritingTo: f) {
+            h.seekToEndOfFile()
+            h.write(line.data(using: .utf8)!)
+            try? h.close()
+        } else {
+            try? line.write(to: f, atomically: true, encoding: .utf8)
+        }
+    }
+}
+
+
 final class PixelBufferSink: NSObject, FlutterTexture {
     private let lock = NSLock()
     private var buffer: CVPixelBuffer?
@@ -192,23 +211,6 @@ class HinterCameraPlugin: NSObject, FlutterPlugin {
     private var faceBusy = false
     private var renderCount: Int64 = 0
     /// 双通道诊断:NSLog + 沙盒文件(iOS26 上 os_log 经侧载签名可能不可见,
-    /// 文件通道保证可读;Documents/hinter_diag.log)
-    func diag(_ msg: String) {
-        NSLog("[HinterCam] %@", msg)
-        let line = "\(Date()): \(msg)" + "\n"
-        let dir = NSSearchPathForDirectoriesInDomains(.documentDirectory,
-            .userDomainMask, true).first
-        if let dir = dir {
-            let f = URL(fileURLWithPath: dir).appendingPathComponent("hinter_diag.log")
-            if let h = try? FileHandle(forWritingTo: f) {
-                h.seekToEndOfFile()
-                h.write(line.data(using: .utf8)!)
-                try? h.close()
-            } else {
-                try? line.write(to: f, atomically: true, encoding: .utf8)
-            }
-        }
-    }
 
     static func register(with registrar: FlutterPluginRegistrar) {
         let inst = HinterCameraPlugin()
