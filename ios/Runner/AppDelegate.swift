@@ -631,7 +631,11 @@ class HinterCameraPlugin: NSObject, FlutterPlugin {
         var pixelAttrs: [CFString: Any] = [
             kCVPixelBufferPixelFormatTypeKey: kCVPixelFormatType_32BGRA,
             kCVPixelBufferWidthKey: width,
-            kCVPixelBufferHeightKey: height
+            kCVPixelBufferHeightKey: height,
+            // ★ Impeller(Metal)要求 buffer 可转 MTLTexture,
+            //   缺此属性时纹理转换静默失败 → 全黑无报错
+            kCVPixelBufferMetalCompatibilityKey: kCFBooleanTrue!,
+            kCVPixelBufferOpenGLESCompatibilityKey: kCFBooleanTrue!,
         ]
         pool = nil
         CVPixelBufferPoolCreate(kCFAllocatorDefault, nil, pixelAttrs as CFDictionary, &pool)
@@ -645,8 +649,13 @@ class HinterCameraPlugin: NSObject, FlutterPlugin {
             CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, pool, &out)
         }
         if out == nil {
+            var createAttrs: [CFString: Any] = [
+                kCVPixelBufferMetalCompatibilityKey: kCFBooleanTrue!,
+                kCVPixelBufferOpenGLESCompatibilityKey: kCFBooleanTrue!,
+            ]
             CVPixelBufferCreate(kCFAllocatorDefault, lastVideoW, lastVideoH,
-                                kCVPixelFormatType_32BGRA, nil, &out)
+                                kCVPixelFormatType_32BGRA,
+                                createAttrs as CFDictionary, &out)
         }
         return out
     }
