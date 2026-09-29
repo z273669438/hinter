@@ -225,6 +225,24 @@ class HinterCameraPlugin: NSObject, FlutterPlugin {
     private var audioOutput: AVCaptureAudioDataOutput?
     private var currentInput: AVCaptureDeviceInput?
     private var front = true
+    @Volatile private var currentTier = 1080
+
+    private func presetFor(_ tier: Int) -> AVCaptureSession.Preset {
+        switch tier {
+        case 720: return .hd1280x720
+        case 2160: return .hd4K3840x2160
+        default: return .high
+        }
+    }
+
+    /// 当前镜头支持的档位(短边像素)
+    private func supportedTiers(front: Bool) -> [Int] {
+        var tiers = [720, 1080]
+        if !front && session.canSetSessionPreset(.hd4K3840x2160) {
+            tiers.append(2160)
+        }
+        return tiers
+    }
 
     private var sink: PixelBufferSink?
     private var textureId: Int64 = -1
@@ -307,7 +325,12 @@ class HinterCameraPlugin: NSObject, FlutterPlugin {
             beauty.brightness = args["brightness"] as? Double ?? beauty.brightness
             beauty.saturation = args["saturation"] as? Double ?? beauty.saturation
             beauty.slim = args["slim"] as? Double ?? beauty.slim
+            diag("setBeauty s=\(beauty.smooth) w=\(beauty.whiten) slim=\(beauty.slim)")
             result(nil)
+        case "setQualityMode":
+            let short = ((call.arguments as? [String: Any])?["short"]
+                as? NSNumber)?.intValue ?? 1080
+            setQualityMode(short: short, result: result)
         case "switchCamera":
             let front = (call.arguments as? [String: Any])?["front"] as? Bool ?? false
             switchCamera(front: front, result: result)
@@ -325,6 +348,28 @@ class HinterCameraPlugin: NSObject, FlutterPlugin {
     }
 
     // ---- 会话 ----
+
+    private func setQualityMode(short: Int, result: @escaping FlutterResult) {
+        sessionQueue.async { [weak self] in
+            guard let self = self else { return }
+            let tiers = self.supportedTiers(front: self.front)
+            let tier = tiers.min(by: {
+                abs($0 - short) < abs($1 - short)
+            }) ?? 1080
+            self.currentTier = tier
+            self.session.beginConfiguration()
+            if self.session.canSetSessionPreset(self.presetFor(tier)) {
+                self.session.sessionPreset = self.presetFor(tier)
+            }
+            self.session.commitConfiguration()
+            DispatchQueue.main.async {
+                result(["modes": tiers.map { NSNumber(value: $0) },
+                        "current": NSNumber(value: tier),
+                        "width": 1080,
+                        "height": 1920])
+            }
+        }
+    }
 
     private func configureAudioSession() {
         let s = AVAudioSession.sharedInstance()
@@ -374,17 +419,21 @@ class HinterCameraPlugin: NSObject, FlutterPlugin {
             let texId = self.textureId
             NSLog("[HinterCam] start done texId=%lld running=%d",
                   texId, session.isRunning ? 1 : 0)
+            let tiers = self.supportedTiers(front: front)
+            let ct = self.currentTier
             DispatchQueue.main.async {
                 result(["textureId": NSNumber(value: texId),
                         "width": 1080,
-                        "height": 1920])
+                        "height": 1920,
+                        "modes": tiers.map { NSNumber(value: $0) },
+                        "current": NSNumber(value: ct)])
             }
         }
     }
 
     private func buildSession(front: Bool) throws {
         session.beginConfiguration()
-        session.sessionPreset = .high
+        session.sessionPreset = presetFor(currentTier)
         defer { session.commitConfiguration() }
 
         let position: AVCaptureDevice.Position = front ? .front : .back
@@ -728,7 +777,7 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
         // 1) 高斯模糊(磨皮基础)
         blurFilter?.setValue(ci.clampedToExtent(), forKey: kCIInputImageKey)
         // 磨皮模糊半径:全分辨率像素,过大必然糊崩
-        let sigma = 1.4 + beauty.smooth * 3.2
+        let sigma = 2.2 + beauty.smooth * 5.0
         blurFilter?.setValue(sigma, forKey: kCIInputRadiusKey)
         var blurred = blurFilter?.outputImage
         if let b = blurred {
@@ -762,6 +811,26 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
         ci = ci.applyingFilter("CIColorControls", parameters: [
             kCIInputBrightnessKey: NSNumber(value: beauty.brightness * 0.25),
             kCIInputSaturationKey: NSNumber(value: 0.78 + beauty.saturation * 0.5)])
+        // 瘦脸:双侧液化内收(近似安卓 GL 版)
+        if beauty.slim > 0.02, faceOn {
+            let fw = Double(extent.width), fh = Double(extent.height)
+            let cx = Double(faceEllipse.x) * fw
+            let cyTop = Double(faceEllipse.y) * fh
+            let rx = Double(faceEllipse.z) * fw
+            let ry = Double(faceEllipse.w) * fh
+            let cyCI = fh - cyTop + ry * 0.12
+            for side in [-1.0, 1.0] {
+                let center = CIVector(x: CGFloat(cx + side * rx * 0.92),
+                                      y: CGFloat(cyCI))
+                ci = ci.applyingFilter("CILiquifyEffect", parameters: [
+                    "inputCenter": center,
+                    "inputRadius": CGFloat(rx * 1.15),
+                    "inputAngle": 0.0,
+                    "inputScale": 1.0,
+                    "inputDisplacement": CGFloat(-26.0 * beauty.slim),
+                ])
+            }
+        }
 
         // 3) 渲染到输出缓冲,交给 Flutter 预览
         renderCount += 1

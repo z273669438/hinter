@@ -14,6 +14,7 @@ import 'package:wakelock_plus/wakelock_plus.dart';
 import '../models/script.dart';
 import '../services/asr_engine.dart';
 import '../services/camera_controller.dart';
+import '../services/ddiag.dart';
 import '../services/device_check.dart';
 import '../services/line_follower.dart';
 import '../services/model_manager.dart';
@@ -79,6 +80,7 @@ class _TeleprompterPageState extends State<TeleprompterPage>
   @override
   void initState() {
     super.initState();
+    Ddiag.init();
     WidgetsBinding.instance.addObserver(this);
     final s = AppSettings.instance;
     _front = s.frontCamera;
@@ -159,6 +161,7 @@ class _TeleprompterPageState extends State<TeleprompterPage>
           _texH = (info?['height'] as num?)?.toDouble() ?? 0;
           _starting = false;
         });
+        Ddiag.w('camera start ok tex=$_textureId');
         _dispatchBeauty();
         final warn = await DeviceCheck.check();
         if (mounted) setState(() => _deviceWarn = warn);
@@ -193,6 +196,8 @@ class _TeleprompterPageState extends State<TeleprompterPage>
       // 引擎可能在 whisper→流式 间回退,每次同步对齐模式
       _follower?.offlineMode = AsrEngine.instance.isWhisper;
       if (_following) _follower?.feed(AsrEngine.instance.alignText);
+      if (_asrDbg % 20 == 1) Ddiag.w('asrText: $text');
+      _asrDbg++;
     });
     _evtSub = _camera.events().listen((ev) {
       if (!mounted) return;
@@ -216,6 +221,7 @@ class _TeleprompterPageState extends State<TeleprompterPage>
 
   bool get _following => AsrEngine.instance.loaded && _asrOn;
   bool _asrOn = false; // 录制开始后打开
+  int _asrDbg = 0;
 
   Future<void> _ensureModel() async {
     if (AsrEngine.instance.loaded) {
@@ -236,6 +242,7 @@ class _TeleprompterPageState extends State<TeleprompterPage>
       _follower?.offlineMode = AsrEngine.instance.isWhisper;
       if (mounted) setState(() => _modelNote = null);
     } catch (e) {
+      Ddiag.w('ASR load failed: $e');
       debugPrint('ASR load failed: $e');
       if (mounted) setState(() => _modelNote = '语音模型不可用,跟读功能关闭');
     }

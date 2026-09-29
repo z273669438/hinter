@@ -7,6 +7,8 @@ import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:path/path.dart' as p;
 
 import 'package:sherpa_onnx/sherpa_onnx.dart' as sherpa_onnx;
+
+import 'ddiag.dart';
 import 'package:whisper_flutter_new/whisper_flutter_new.dart';
 
 
@@ -102,13 +104,23 @@ class AsrEngine {
       sherpa_onnx.initBindings();
       await _buildStreamingRecognizer(modelDir);
       _loaded = true;
+      Ddiag.w('streaming zipformer loaded ok');
+    } catch (e) {
+      Ddiag.w('engine load ERR $e');
+      rethrow;
     } finally {
       _loading = false;
     }
   }
 
   /// 送入一帧 16kHz 单声道 int16 小端 PCM
+  int _pcmDbg = 0;
+
   void acceptPcm(Uint8List bytes) {
+    _pcmDbg++;
+    if (_pcmDbg == 1 || _pcmDbg % 200 == 0) {
+      Ddiag.w('pcm chunk #$_pcmDbg bytes=${bytes.length} loaded=$_loaded');
+    }
     if (_whisperMode) {
       // whisper 模式:缓存 PCM,周期切块识别
       if (bytes.length < 2) return;
