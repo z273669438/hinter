@@ -225,7 +225,7 @@ class HinterCameraPlugin: NSObject, FlutterPlugin {
     private var audioOutput: AVCaptureAudioDataOutput?
     private var currentInput: AVCaptureDeviceInput?
     private var front = true
-    @Volatile private var currentTier = 1080
+    private var currentTier = 1080
 
     private func presetFor(_ tier: Int) -> AVCaptureSession.Preset {
         switch tier {
