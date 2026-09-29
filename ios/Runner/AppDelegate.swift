@@ -730,10 +730,13 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
         //    保留轮廓细节);随后 gamma 美白、CITemperatureAndTint 红润、
         //    CIColorControls 亮度/饱和度。iOS 端瘦脸暂未启用(slim 忽略)
         if let b = blurred, beauty.smooth > 0.01 {
+            // applyingFilter 的接收者自动占 inputImage,
+            // 第二张图必须放 kCIInputImage2Key——此前放错 key 导致
+            // 合成 extent=(0,0,0,0) → 每帧渲染空图 → 全黑屏
             let maxed = ci.applyingFilter("CIMaximumCompositing",
-                                          parameters: [kCIInputImageKey: b])
+                                          parameters: [kCIInputImage2Key: b])
             let minned = maxed.applyingFilter("CIMinimumCompositing",
-                                              parameters: [kCIInputImageKey: ci])
+                                              parameters: [kCIInputImage2Key: ci])
             ci = minned.cropped(to: extent)
         }
         if beauty.whiten > 0.01 {
@@ -757,16 +760,9 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
         }
         if let sink = sink, let ctx = ciContext, textureId >= 0,
            let outBuf = makeBuffer() {
-            // v7 诊断:前 60 帧填纯红(检验引擎→屏幕通道),
-            // 第 61 帧存 CI 真实渲染结果为 PNG(检验渲染内容)
-            if renderCount <= 60 {
-                fillRed(outBuf)
-                if renderCount == 60 {
-                    ciWrite(ci, ctx: ctx, name: "first_ci_frame.png")
-                    diag("red phase done, CI png saved")
-                }
-            } else {
-                ctx.render(ci, to: outBuf)
+            ctx.render(ci, to: outBuf)
+            if renderCount == 70 {
+                ciWrite(ci, ctx: ctx, name: "frame70.png")
             }
             sink.present(outBuf)
             let tid = textureId
