@@ -265,7 +265,16 @@ class HinterCameraPlugin: NSObject, FlutterPlugin {
 
             if self.sink == nil {
                 self.sink = PixelBufferSink()
-                self.textureId = registrar.textures().register(self.sink!)
+                // FlutterTextureRegistry 必须在主线程调用:
+                // 后台线程 register 会静默失败 → Dart 拿到黑纹理(无报错)
+                let sem = DispatchSemaphore(value: 0)
+                var tid: Int64 = -1
+                DispatchQueue.main.async {
+                    tid = registrar.textures().register(self.sink!)
+                    sem.signal()
+                }
+                sem.wait()
+                self.textureId = tid
             }
             if self.ciContext == nil {
                 self.ciContext = CIContext(options: [.cacheIntermediates: false])
@@ -391,7 +400,10 @@ class HinterCameraPlugin: NSObject, FlutterPlugin {
             self.finishWriter()
             self.teardownSession()
             if let id = self.sink.map({ _ in self.textureId }), id >= 0 {
-                self.registrar?.textures().unregisterTexture(id)
+                let reg = self.registrar
+                DispatchQueue.main.async {
+                    reg?.textures().unregisterTexture(id)
+                }
             }
             self.sink = nil
             self.textureId = -1
@@ -662,7 +674,11 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
            let outBuf = makeBuffer() {
             ctx.render(ci, to: outBuf)
             sink.present(outBuf)
-            registrar?.textures().textureFrameAvailable(textureId)
+            let tid = textureId
+            let reg = registrar
+            DispatchQueue.main.async {
+                reg?.textures().textureFrameAvailable(tid)
+            }
 
             // 4) 录制
             if recording, recording_wantsVideo(),
