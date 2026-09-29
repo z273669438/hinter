@@ -9,7 +9,6 @@ jobs:
     permissions:
       contents: write
       actions: read
-      issues: write
     steps:
       - name: Download artifact zip via API
         id: dl
@@ -35,14 +34,17 @@ jobs:
           body: 未签名 ipa,Sideloadly 签名安装
           files: hinter-unsigned.ipa
 
-      - name: Report step log as issue
+      - name: Push step log to diag branch
         if: always()
-        env:
-          TITLE: "publish-diag run${{ github.run_number }} dl=${{ steps.dl.outcome }}"
         run: |
-          python3 -c "import json,os;b=open('/tmp/step.log',errors='ignore').read()[-6000:];json.dump({'title':os.environ['TITLE'],'body':'\`\`\`'+b+'\`\`\`'},open('/tmp/payload.json','w'))"
-          cat /tmp/payload.json | head -c 200
-          curl -sS -X POST -H "Authorization: Bearer $GITHUB_TOKEN" \
-            -H "Accept: application/vnd.github+json" \
-            https://api.github.com/repos/$GITHUB_REPOSITORY/issues \
-            -d @/tmp/payload.json
+          cd /tmp
+          git init diag -q
+          cd diag
+          git config user.email "ci@hinter.local"
+          git config user.name "ci"
+          git checkout --orphan diag -q
+          cp /tmp/step.log step.log 2>/dev/null || echo "no log" > step.log
+          echo "dl_outcome=${{ steps.dl.outcome }}" >> step.log
+          git add -A
+          git commit -m "diag $GITHUB_RUN_NUMBER" -q
+          git push -f "https://x-access-token:${GITHUB_TOKEN}@github.com/$GITHUB_REPOSITORY.git" diag:diag
