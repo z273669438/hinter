@@ -723,6 +723,11 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
         }
     }
 
+    /// 瘦脸液化中心的平滑值(每帧 EMA,消除 Vision 10fps 阶跃跳动)
+    private var slimCx: Double = -1
+    private var slimCy: Double = -1
+    private var slimRx: Double = 0
+
     /// Vision 人脸检测(限流 ~10fps,后台队列),结果写入 faceEllipse/faceOn
     private func detectFace(_ pb: CVPixelBuffer) {
         let now = CACurrentMediaTime()
@@ -777,7 +782,7 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
         // 1) 高斯模糊(磨皮基础)
         blurFilter?.setValue(ci.clampedToExtent(), forKey: kCIInputImageKey)
         // 磨皮模糊半径:全分辨率像素,过大必然糊崩
-        let sigma = 2.2 + beauty.smooth * 5.0
+        let sigma = 3.5 + beauty.smooth * 9.0
         blurFilter?.setValue(sigma, forKey: kCIInputRadiusKey)
         var blurred = blurFilter?.outputImage
         if let b = blurred {
@@ -811,23 +816,31 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
         ci = ci.applyingFilter("CIColorControls", parameters: [
             kCIInputBrightnessKey: NSNumber(value: beauty.brightness * 0.25),
             kCIInputSaturationKey: NSNumber(value: 0.78 + beauty.saturation * 0.5)])
-        // 瘦脸:双侧液化内收(近似安卓 GL 版)
+        // 瘦脸:双侧液化内收。中心/半径用每帧 EMA 平滑值——
+        // Vision 检测 ~10fps 阶跃更新,直接用原值会让液化中心
+        // 每 0.1s 瞬移一次 → 画面"抽搐"
         if beauty.slim > 0.02, faceOn {
             let fw = Double(extent.width), fh = Double(extent.height)
-            let cx = Double(faceEllipse.x) * fw
-            let cyTop = Double(faceEllipse.y) * fh
-            let rx = Double(faceEllipse.z) * fw
-            let ry = Double(faceEllipse.w) * fh
-            let cyCI = fh - cyTop + ry * 0.12
+            let tCx = Double(faceEllipse.x) * fw
+            let tCy = fh - Double(faceEllipse.y) * fh
+                + Double(faceEllipse.w) * fh * 0.12
+            let tRx = Double(faceEllipse.z) * fw
+            if slimCx < 0 {
+                slimCx = tCx; slimCy = tCy; slimRx = tRx
+            }
+            let k = 0.16
+            slimCx += (tCx - slimCx) * k
+            slimCy += (tCy - slimCy) * k
+            slimRx += (tRx - slimRx) * k
             for side in [-1.0, 1.0] {
-                let center = CIVector(x: CGFloat(cx + side * rx * 0.92),
-                                      y: CGFloat(cyCI))
+                let center = CIVector(x: CGFloat(slimCx + side * slimRx * 0.85),
+                                      y: CGFloat(slimCy))
                 ci = ci.applyingFilter("CILiquifyEffect", parameters: [
                     "inputCenter": center,
-                    "inputRadius": CGFloat(rx * 1.15),
+                    "inputRadius": CGFloat(slimRx * 0.75),
                     "inputAngle": 0.0,
                     "inputScale": 1.0,
-                    "inputDisplacement": CGFloat(-26.0 * beauty.slim),
+                    "inputDisplacement": CGFloat(-12.0 * beauty.slim),
                 ])
             }
         }
@@ -868,7 +881,13 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
         return writerVideo?.isReadyForMoreMediaData ?? false
     }
 
+    private var audioDbg: Int64 = 0
+
     private func handleAudio(_ sampleBuffer: CMSampleBuffer) {
+        audioDbg += 1
+        if audioDbg == 1 || audioDbg % 200 == 0 {
+            diag("audio frame #\(audioDbg) micSink=\(micSink == nil ? "nil" : "on")")
+        }
         // 1) 录制音轨(直接透传给 AVAssetWriter 由其编码 AAC)
         if recording, let w = writer, w.status == .writing,
            let aIn = writerAudio, aIn.isReadyForMoreMediaData,
@@ -877,6 +896,9 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
         }
 
         // 2) 本地语音识别:转 16kHz 单声道 int16
+        if micSink == nil, audioDbg % 100 == 5 {
+            diag("audio but micSink=nil (dart 未订阅?)")
+        }
         guard let micSink = micSink,
               let desc = CMSampleBufferGetFormatDescription(sampleBuffer) else { return }
         do {
