@@ -33,10 +33,17 @@ final class PixelBufferSink: NSObject, FlutterTexture {
         lock.unlock()
     }
 
+    var copyCount: Int64 = 0
     func copyPixelBuffer() -> Unmanaged<CVPixelBuffer>? {
         lock.lock()
-        defer { lock.unlock() }
-        guard let b = buffer else { return nil }
+        copyCount += 1
+        if copyCount == 1 || copyCount % 150 == 0 {
+            NSLog("[HinterCam] copyPixelBuffer #%lld hasBuf=%d",
+                  copyCount, buffer == nil ? 0 : 1)
+        }
+        let b = buffer
+        lock.unlock()
+        guard let b else { return nil }
         return Unmanaged<CVPixelBuffer>.passRetained(b)
     }
 }
@@ -184,6 +191,7 @@ class HinterCameraPlugin: NSObject, FlutterPlugin {
     private var faceOn = false
     private var lastFaceDetect: CFTimeInterval = 0
     private var faceBusy = false
+    private var renderCount: Int64 = 0
 
     static func register(with registrar: FlutterPluginRegistrar) {
         let inst = HinterCameraPlugin()
@@ -275,6 +283,7 @@ class HinterCameraPlugin: NSObject, FlutterPlugin {
                 }
                 sem.wait()
                 self.textureId = tid
+                NSLog("[HinterCam] registerTexture tid=%lld", tid)
             }
             if self.ciContext == nil {
                 self.ciContext = CIContext(options: [.cacheIntermediates: false])
@@ -293,6 +302,8 @@ class HinterCameraPlugin: NSObject, FlutterPlugin {
 
             DispatchQueue.global().async { self.session.startRunning() }
             let texId = self.textureId
+            NSLog("[HinterCam] start done texId=%lld running=%d",
+                  texId, session.isRunning ? 1 : 0)
             DispatchQueue.main.async {
                 result(["textureId": NSNumber(value: texId),
                         "width": 1080,
@@ -670,6 +681,12 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
             kCIInputSaturationKey: NSNumber(value: 0.78 + beauty.saturation * 0.5)])
 
         // 3) 渲染到输出缓冲,交给 Flutter 预览
+        renderCount += 1
+        if renderCount == 1 || renderCount % 150 == 0 {
+            NSLog("[HinterCam] render #%lld tex=%d buf=%@",
+                  renderCount, textureId,
+                  makeBuffer() == nil ? "NIL" : "ok")
+        }
         if let sink = sink, let ctx = ciContext, textureId >= 0,
            let outBuf = makeBuffer() {
             ctx.render(ci, to: outBuf)
