@@ -85,9 +85,11 @@ final class PassthroughStreamHandler: NSObject, FlutterStreamHandler {
 
 /// v7 诊断:把 CI 图像落盘为 PNG(Documents)
 func ciWrite(_ image: CIImage, ctx: CIContext, name: String) {
-    let ext = image.extent.isFinite ? image.extent :
-        CGRect(x: 0, y: 0, width: max(image.extent.width, 1),
-               height: max(image.extent.height, 1))
+    let raw = image.extent
+    let ext = raw.isInfinite
+        ? CGRect(x: 0, y: 0, width: 720, height: 1280)
+        : CGRect(x: max(raw.minX, 0), y: max(raw.minY, 0),
+                 width: max(raw.width, 1), height: max(raw.height, 1))
     guard let cg = ctx.createCGImage(image, from: ext) else {
         diag("createCGImage FAILED extent=\(image.extent)")
         return
@@ -95,7 +97,7 @@ func ciWrite(_ image: CIImage, ctx: CIContext, name: String) {
     let dir = NSSearchPathForDirectoriesInDomains(.documentDirectory,
         .userDomainMask, true).first!
     let url = URL(fileURLWithPath: dir).appendingPathComponent(name)
-    if let data = try? PNGRep.repr(cg) {
+    if let data = PNGRep.repr(cg) {
         try? data.write(to: url)
         diag("saved \(name) \(data.count)b extent=\(image.extent)")
     } else {
@@ -104,12 +106,13 @@ func ciWrite(_ image: CIImage, ctx: CIContext, name: String) {
 }
 
 enum PNGRep {
-    static func repr(_ cg: CGImage) throws -> Data {
-        let ds = CGImageDestinationCreateWithData(
-            NSMutableData() as MutableData, "public.png" as CFString, 1, nil)!
+    static func repr(_ cg: CGImage) -> Data? {
+        let acc = NSMutableData()
+        guard let ds = CGImageDestinationCreateWithData(
+            acc, "public.png" as CFString, 1, nil) else { return nil }
         CGImageDestinationAddImage(ds, cg, nil)
-        CGImageDestinationFinalize(ds)
-        return (ds as! NSMutableData) as Data
+        guard CGImageDestinationFinalize(ds) else { return nil }
+        return acc as Data
     }
 }
 
