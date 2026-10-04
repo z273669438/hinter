@@ -882,10 +882,14 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
         return writerVideo?.isReadyForMoreMediaData ?? false
     }
 
+    private var micSent: Int64 = 0
+    private var micConvFail: Int64 = 0
+    private var micEmpty: Int64 = 0
+
     private func handleAudio(_ sampleBuffer: CMSampleBuffer) {
         audioDbg += 1
         if audioDbg == 1 || audioDbg % 200 == 0 {
-            diag("audio frame #\(audioDbg) micSink=\(micSink == nil ? "nil" : "on")")
+            diag("audio #\(audioDbg) micSink=\(micSink == nil ? "nil" : "on") sent=\(micSent) fail=\(micConvFail) empty=\(micEmpty)")
         }
         // 1) 录制音轨(直接透传给 AVAssetWriter 由其编码 AAC)
         if recording, let w = writer, w.status == .writing,
@@ -951,11 +955,24 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
                let ch = out.int16ChannelData?[0] {
                 let bytes = Data(bytes: ch,
                                  count: Int(out.frameLength) * 2)
+                micSent += 1
+                if micSent == 1 || micSent % 200 == 0 {
+                    diag("SENT #\(micSent) bytes=\(bytes.count)")
+                }
                 DispatchQueue.main.async {
                     micSink(bytes)
                 }
+            } else {
+                micEmpty += 1
+                if micEmpty == 1 || micEmpty % 100 == 0 {
+                    diag("EMPTY/NOCH status=\(status.rawValue) fl=\(out.frameLength) #\(micEmpty)")
+                }
             }
         } catch {
+            micConvFail += 1
+            if micConvFail == 1 || micConvFail % 50 == 0 {
+                diag("CONV FAIL #\(micConvFail): \(error)")
+            }
             // 转换失败时静默跳过该帧,不影响预览/录制
         }
     }
