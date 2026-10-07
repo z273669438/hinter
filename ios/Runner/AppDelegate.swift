@@ -287,11 +287,6 @@ class HinterCameraPlugin: NSObject, FlutterPlugin {
     private var micSent: Int64 = 0
     private var micConvFail: Int64 = 0
     private var micEmpty: Int64 = 0
-    private var audioDbg: Int64 = 0
-    /// 瘦脸液化中心的平滑值(每帧 EMA,消除 Vision 10fps 阶跃跳动)
-    /// (Swift 禁止 extension 声明存储属性,必须放主类)
-    /// 双通道诊断:NSLog + 沙盒文件(iOS26 上 os_log 经侧载签名可能不可见,
-
     static func register(with registrar: FlutterPluginRegistrar) {
         let inst = HinterCameraPlugin()
         inst.registrar = registrar
