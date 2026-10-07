@@ -957,7 +957,7 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
                 if abl.mNumberBuffers >= 1, let p = abl.mBuffers.mData,
                    abl.mBuffers.mDataByteSize > 0 {
                     let bytes = Data(bytes: p,
-                                     count: abl.mBuffers.mDataByteSize)
+                                     count: Int(abl.mBuffers.mDataByteSize))
                     micSent += 1
                     if micSent == 1 || micSent % 200 == 0 {
                         diag("SENT #\(micSent) bytes=\(bytes.count)")
