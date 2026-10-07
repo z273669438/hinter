@@ -950,21 +950,29 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
                 outStatus.pointee = .haveData
                 return inBuf
             }
-            if status == .haveData, out.frameLength > 0,
-               let ch = out.int16ChannelData?[0] {
-                let bytes = Data(bytes: ch,
-                                 count: Int(out.frameLength) * 2)
-                micSent += 1
-                if micSent == 1 || micSent % 200 == 0 {
-                    diag("SENT #\(micSent) bytes=\(bytes.count)")
-                }
-                DispatchQueue.main.async {
-                    micSink(bytes)
+            if status == .haveData, out.frameLength > 0 {
+                // 直读底层 AudioBufferList(绕开 int16ChannelData 属性——
+                // 实测该属性对 Int16 缓冲返回 nil,是跟读不动的断点)
+                let abl = out.audioBufferList.pointee
+                if abl.mNumberBuffers >= 1, let p = abl.mBuffers.mData,
+                   abl.mBuffers.mDataByteSize > 0 {
+                    let bytes = Data(bytes: p,
+                                     count: abl.mBuffers.mDataByteSize)
+                    micSent += 1
+                    if micSent == 1 || micSent % 200 == 0 {
+                        diag("SENT #\(micSent) bytes=\(bytes.count)")
+                    }
+                    DispatchQueue.main.async {
+                        micSink(bytes)
+                    }
+                } else {
+                    micEmpty += 1
+                    diag("EMPTY mData nil #\(micEmpty)")
                 }
             } else {
                 micEmpty += 1
                 if micEmpty == 1 || micEmpty % 100 == 0 {
-                    diag("EMPTY/NOCH status=\(status.rawValue) fl=\(out.frameLength) #\(micEmpty)")
+                    diag("NOCH status=\(status.rawValue) fl=\(out.frameLength) #\(micEmpty)")
                 }
             }
         } catch {
