@@ -1,0 +1,38 @@
+name: Transfer IPA to HuggingFace
+
+on:
+  workflow_dispatch:
+
+jobs:
+  transfer:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Download release asset
+        run: |
+          curl -sL -H "Authorization: Bearer $GITHUB_TOKEN" \
+            https://github.com/z273669438/hinter/releases/download/ios-test-1/hinter-ios-unsigned.ipa \
+            -o hinter-ios-unsigned.ipa
+          ls -lh hinter-ios-unsigned.ipa
+
+      - name: Upload to HuggingFace
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          pip install -q -U huggingface_hub
+          python3 - <<'PYX'
+          import os
+          from huggingface_hub import HfApi
+          api = HfApi(token=os.environ["HF_TOKEN"])
+          me = api.whoami()
+          user = me["name"]
+          repo_id = f"{user}/hinter-ios"
+          api.create_repo(repo_id, repo_type="model", exist_ok=True, private=False)
+          api.upload_file(
+              path_or_fileobj="hinter-ios-unsigned.ipa",
+              path_in_repo="hinter-ios-unsigned.ipa",
+              repo_id=repo_id, repo_type="model")
+          print("HF_USER=" + user)
+          print("DOWNLOAD=https://hf-mirror.com/" + repo_id + "/resolve/main/hinter-ios-unsigned.ipa")
+          PYX
