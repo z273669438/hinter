@@ -446,11 +446,12 @@ class _TeleprompterPageState extends State<TeleprompterPage>
     }
 
     Widget rowOf(List<int> items) {
+      final cols = _modes.length <= 4 ? _modes.length : 2;
       return Padding(
         padding: const EdgeInsets.only(bottom: 8),
         child: Row(
           children: [
-            for (var i = 0; i < 2; i++) ...[
+            for (var i = 0; i < cols; i++) ...[
               if (i > 0) const SizedBox(width: 8),
               Expanded(child: cell(i < items.length ? items[i] : null)),
             ],
@@ -459,6 +460,9 @@ class _TeleprompterPageState extends State<TeleprompterPage>
       );
     }
 
+    if (_modes.length <= 4) {
+      return [rowOf(_modes.toList())];
+    }
     final half = (_modes.length / 2).ceil();
     return [
       rowOf(_modes.take(half).toList()),
