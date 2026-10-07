@@ -904,10 +904,12 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
         do {
             if audioConverter == nil {
                 let inFormat = AVAudioFormat(cmAudioFormatDescription: desc)
+                // non-interleaved:int16ChannelData 属性仅对
+                // 非交错格式提供指针,交错格式固定返回 nil(黑屏同款静默坑)
                 let outFormat = AVAudioFormat(commonFormat: .pcmFormatInt16,
                                               sampleRate: 16000,
                                               channels: 1,
-                                              interleaved: true)!
+                                              interleaved: false)!
                 audioConverter = AVAudioConverter(from: inFormat, to: outFormat)
                 pcmOut = AVAudioPCMBuffer(pcmFormat: outFormat,
                                           frameCapacity: 48000)
