@@ -784,7 +784,7 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
         // 1) 高斯模糊(磨皮基础)
         blurFilter?.setValue(ci.clampedToExtent(), forKey: kCIInputImageKey)
         // 磨皮模糊半径:全分辨率像素,过大必然糊崩
-        let sigma = 6.0 + beauty.smooth * 12.0
+        let sigma = 5.0 + beauty.smooth * 11.0
         blurFilter?.setValue(sigma, forKey: kCIInputRadiusKey)
         var blurred = blurFilter?.outputImage
         if let b = blurred {
@@ -794,16 +794,15 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
         // 2) 磨皮:边缘保留合成(经典 max/min 组合,去暗斑提亮瑕疵,
         //    保留轮廓细节);随后 gamma 美白、CITemperatureAndTint 红润、
         //    CIColorControls 亮度/饱和度。iOS 端瘦脸暂未启用(slim 忽略)
+        // 磨皮:原图→模糊图直接线性混合(CIDissolveTransition)。
+        // 此前的 max/min 边缘保留配方对平滑皮肤几乎零改变(用户反馈
+        // "滑动没变化"的根因);dissolve 每一档强度都肉眼可见
         if let b = blurred, beauty.smooth > 0.01 {
-            // applyingFilter 的接收者自动占 inputImage,
-            // 合成协议的第二张图键名是 inputBackgroundImage
-            // (inputImage2 不存在会抛 forUndefinedKey 崩溃;
-            //  全用 inputImage 则背景缺省 extent 归零 → 黑屏)
-            let maxed = ci.applyingFilter("CIMaximumCompositing",
-                                          parameters: ["inputBackgroundImage": b])
-            let minned = maxed.applyingFilter("CIMinimumCompositing",
-                                              parameters: ["inputBackgroundImage": ci])
-            ci = minned.cropped(to: extent)
+            let t = NSNumber(value: 0.15 + 0.75 * beauty.smooth)
+            ci = ci.applyingFilter("CIDissolveTransition", parameters: [
+                "inputTargetImage": b.cropped(to: extent),
+                "inputTime": t,
+            ])
         }
         if beauty.whiten > 0.01 {
             ci = ci.applyingFilter("CIGammaAdjust", parameters: [
@@ -818,15 +817,8 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
         ci = ci.applyingFilter("CIColorControls", parameters: [
             kCIInputBrightnessKey: NSNumber(value: beauty.brightness * 0.25),
             kCIInputSaturationKey: NSNumber(value: 0.78 + beauty.saturation * 0.5)])
-        // 瘦脸:双侧液化内收。中心/半径用每帧 EMA 平滑值——
-        // Vision 检测 ~10fps 阶跃更新,直接用原值会让液化中心
-        // 每 0.1s 瞬移一次 → 画面"抽搐"
-        // 丢脸 2 秒内保持液化(中心冻结在最后位置)——faceOn 快速
-        // 翻转会让液化整体突现突消,视觉上就是"抽搐闪烁"
-        let slimAlive = faceOn || (slimCx > 0 && CACurrentMediaTime() - slimLostAt < 2.0)
-        if !faceOn && slimCx > 0 { slimLostAt = slimLostAt == 0 ? CACurrentMediaTime() : slimLostAt }
-        if faceOn { slimLostAt = 0 }
-        if beauty.slim > 0.02, slimAlive {
+        // iOS 液化瘦脸停用(v21:A12 上性能抖动不可接受;按钮端隐藏)
+        if false {
             let fw = Double(extent.width), fh = Double(extent.height)
             let tCx = Double(faceEllipse.x) * fw
             let tCy = fh - Double(faceEllipse.y) * fh

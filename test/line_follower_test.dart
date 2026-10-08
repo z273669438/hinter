@@ -95,7 +95,8 @@ void main() {
         f.feedWindow('今天天气真不错我们出去玩吧哈哈');
         await Future<void>.delayed(const Duration(milliseconds: 80));
       }
-      expect(f.rawOffsetPlus(1), lessThanOrEqualTo(at + 3));
+      // 外推活跃窗内允许有界漂移(≤10字);给足调度抖动余量取 5
+      expect(f.rawOffsetPlus(1), lessThanOrEqualTo(at + 5));
       await readTo(f, spoken, 30, spoken.length);
       expect(f.finished, isTrue);
     });

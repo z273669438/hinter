@@ -1012,8 +1012,11 @@ class _TeleprompterPageState extends State<TeleprompterPage>
         item('磨皮', 'smooth'),
         const SizedBox(height: 8),
         item('美白', 'whiten'),
-        const SizedBox(height: 8),
-        item('瘦脸', 'slim'),
+        // iOS 液化瘦脸性能不达标(v21 起隐藏),安卓正常
+        if (!Platform.isIOS) ...[
+          const SizedBox(height: 8),
+          item('瘦脸', 'slim'),
+        ],
       ],
     );
   }
