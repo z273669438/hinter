@@ -287,6 +287,7 @@ class HinterCameraPlugin: NSObject, FlutterPlugin {
     private var micSent: Int64 = 0
     private var micConvFail: Int64 = 0
     private var micEmpty: Int64 = 0
+    private var slimLostAt: CFTimeInterval = 0
     static func register(with registrar: FlutterPluginRegistrar) {
         let inst = HinterCameraPlugin()
         inst.registrar = registrar
@@ -783,7 +784,7 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
         // 1) 高斯模糊(磨皮基础)
         blurFilter?.setValue(ci.clampedToExtent(), forKey: kCIInputImageKey)
         // 磨皮模糊半径:全分辨率像素,过大必然糊崩
-        let sigma = 3.5 + beauty.smooth * 9.0
+        let sigma = 4.0 + beauty.smooth * 14.0
         blurFilter?.setValue(sigma, forKey: kCIInputRadiusKey)
         var blurred = blurFilter?.outputImage
         if let b = blurred {
@@ -820,7 +821,12 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
         // 瘦脸:双侧液化内收。中心/半径用每帧 EMA 平滑值——
         // Vision 检测 ~10fps 阶跃更新,直接用原值会让液化中心
         // 每 0.1s 瞬移一次 → 画面"抽搐"
-        if beauty.slim > 0.02, faceOn {
+        // 丢脸 2 秒内保持液化(中心冻结在最后位置)——faceOn 快速
+        // 翻转会让液化整体突现突消,视觉上就是"抽搐闪烁"
+        let slimAlive = faceOn || (slimCx > 0 && CACurrentMediaTime() - slimLostAt < 2.0)
+        if !faceOn && slimCx > 0 { slimLostAt = slimLostAt == 0 ? CACurrentMediaTime() : slimLostAt }
+        if faceOn { slimLostAt = 0 }
+        if beauty.slim > 0.02, slimAlive {
             let fw = Double(extent.width), fh = Double(extent.height)
             let tCx = Double(faceEllipse.x) * fw
             let tCy = fh - Double(faceEllipse.y) * fh
@@ -829,7 +835,7 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
             if slimCx < 0 {
                 slimCx = tCx; slimCy = tCy; slimRx = tRx
             }
-            let k = 0.16
+            let k = 0.10
             slimCx += (tCx - slimCx) * k
             slimCy += (tCy - slimCy) * k
             slimRx += (tRx - slimRx) * k
@@ -950,9 +956,11 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
                 outStatus.pointee = .haveData
                 return inBuf
             }
-            if status == .haveData, out.frameLength > 0 {
-                // 直读底层 AudioBufferList(绕开 int16ChannelData 属性——
-                // 实测该属性对 Int16 缓冲返回 nil,是跟读不动的断点)
+            // 不信任 status 枚举返回值(iOS 26 桥接层实测 status=1 时
+            // Swift 的 == .haveData 仍判 false):只看缓冲区有没有数据
+            let statusRaw = status.rawValue
+            _ = status
+            if out.frameLength > 0 {
                 let abl = out.audioBufferList.pointee
                 if abl.mNumberBuffers >= 1, let p = abl.mBuffers.mData,
                    abl.mBuffers.mDataByteSize > 0 {
@@ -967,12 +975,14 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
                     }
                 } else {
                     micEmpty += 1
-                    diag("EMPTY mData nil #\(micEmpty)")
+                    if micEmpty == 1 || micEmpty % 100 == 0 {
+                        diag("NILBUF st=\(statusRaw) fl=\(out.frameLength) nb=\(abl.mNumberBuffers) #\(micEmpty)")
+                    }
                 }
             } else {
                 micEmpty += 1
                 if micEmpty == 1 || micEmpty % 100 == 0 {
-                    diag("NOCH status=\(status.rawValue) fl=\(out.frameLength) #\(micEmpty)")
+                    diag("ZERO st=\(statusRaw) fl=\(out.frameLength) #\(micEmpty)")
                 }
             }
         } catch {
