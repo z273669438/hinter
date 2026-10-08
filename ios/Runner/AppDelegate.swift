@@ -288,8 +288,8 @@ class HinterCameraPlugin: NSObject, FlutterPlugin {
             diag("metallib NOT FOUND -> fallback chain")
             return nil
         }
-        let k = CIColorKernel(functionName: "hinterBeauty",
-                              fromMetalLibraryData: data)
+        let k = try? CIColorKernel(functionName: "hinterBeauty",
+                                   fromMetalLibraryData: data)
         diag("beautyKernel \(k != nil ? "LOADED" : "BUILD FAILED")")
         return k
     }()
