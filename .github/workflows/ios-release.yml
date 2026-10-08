@@ -29,13 +29,14 @@ jobs:
           exit ${PIPESTATUS[0]}
 
       - name: Compile Metal kernel into app
+        id: metal
         if: steps.build.outcome == 'success'
+        continue-on-error: true
         run: |
-          set -e
-          xcrun -sdk iphoneos metal -c ios/Kernel/hinter.metal -o /tmp/hinter.air
-          xcrun -sdk iphoneos metallib /tmp/hinter.air -o /tmp/default.metallib
-          cp /tmp/default.metallib build/ios/iphoneos/Runner.app/default.metallib
-          ls -l build/ios/iphoneos/Runner.app/default.metallib
+          { xcrun -sdk iphoneos metal -std=ios-metal1.2 -c ios/Kernel/hinter.metal -o /tmp/hinter.air 2>&1 || echo METALC_FAIL; } | tee /tmp/metal.log
+          xcrun -sdk iphoneos metallib /tmp/hinter.air -o /tmp/default.metallib 2>&1 | tee -a /tmp/metal.log || echo METALLIB_FAIL | tee -a /tmp/metal.log
+          cp /tmp/default.metallib build/ios/iphoneos/Runner.app/default.metallib || echo CP_FAIL | tee -a /tmp/metal.log
+          grep -qE "error|FAIL" /tmp/metal.log && { cat /tmp/metal.log; exit 1; } || true
 
       - name: Package unsigned IPA
         if: steps.build.outcome == 'success'
@@ -55,12 +56,13 @@ jobs:
           files: hinter-ios-unsigned.ipa
 
       - name: Report build errors as issue
-        if: steps.build.outcome == 'failure'
+        if: steps.build.outcome == 'failure' || steps.metal.outcome == 'failure'
         env:
           GHT: ${{ secrets.GITHUB_TOKEN }}
         run: |
           grep -iE "error:|fatal" /tmp/build.log | head -60 > /tmp/errs.txt || true
           [ -s /tmp/errs.txt ] || tail -80 /tmp/build.log > /tmp/errs.txt
+          [ -f /tmp/metal.log ] && { echo "==== METAL ====" >> /tmp/errs.txt; cat /tmp/metal.log >> /tmp/errs.txt; }
           python3 - <<'PYX'
           import json, os, urllib.request
           body = open('/tmp/errs.txt').read()[-5000:]
