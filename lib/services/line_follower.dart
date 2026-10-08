@@ -555,9 +555,9 @@ class LineFollower {
     // 补偿解码延迟期间用户多念的字数,不会越过正在念的位置;
     // 转写流静默(停读 6s)后回落到 _mpos+6,随即自然停住
     final active = _lastTranscriptMs > 0 &&
-        DateTime.now().millisecondsSinceEpoch - _lastTranscriptMs < 8000;
+        DateTime.now().millisecondsSinceEpoch - _lastTranscriptMs < 5000;
     final caughtUp = _offset >= _mpos; // 已追平识别位置(处于外推段)
-    final target = _mpos + (active ? 18 : 6);
+    final target = _mpos + (active ? 10 : 6);
     final gap = target - _offset;
     if (gap <= 0) {
       _debt = 0;

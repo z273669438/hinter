@@ -180,7 +180,7 @@ extern "C" float4 beautyCombine(coreimage::sampler srcSampler,
     // 磨皮:小半径模糊 + 边缘保留 + 细节回加(避免塑料感)
     float3 detail = s - b;
     float dy = abs(dot(detail, float3(0.299, 0.587, 0.114)));
-    float edge = smoothstep(0.015, 0.09, dy);
+    float edge = smoothstep(0.010, 0.06, dy);
     float3 smoothed = mix(b, s, edge);
 
     float lum = dot(s, float3(0.299, 0.587, 0.114));
@@ -197,7 +197,7 @@ extern "C" float4 beautyCombine(coreimage::sampler srcSampler,
     m *= 1.0 - smoothstep(0.80, 0.96, lum);
     m *= smoothstep(0.05, 0.15, lum);
 
-    float st = clamp(smoothAmt * m, 0.0, 1.0);
+    float st = min(smoothAmt * m, 0.85);
     float3 c = mix(s, smoothed, st);
     c += detail * (st * 0.25); // 细节回加
     // 美白:gamma 提亮中间调(保色相纹理)+ 高光保护 + 微暖调(与 Android 一致)
@@ -784,7 +784,7 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
         // 1) 高斯模糊(磨皮基础)
         blurFilter?.setValue(ci.clampedToExtent(), forKey: kCIInputImageKey)
         // 磨皮模糊半径:全分辨率像素,过大必然糊崩
-        let sigma = 4.0 + beauty.smooth * 14.0
+        let sigma = 6.0 + beauty.smooth * 12.0
         blurFilter?.setValue(sigma, forKey: kCIInputRadiusKey)
         var blurred = blurFilter?.outputImage
         if let b = blurred {
@@ -835,7 +835,7 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
             if slimCx < 0 {
                 slimCx = tCx; slimCy = tCy; slimRx = tRx
             }
-            let k = 0.10
+            let k = 0.05
             slimCx += (tCx - slimCx) * k
             slimCy += (tCy - slimCy) * k
             slimRx += (tRx - slimRx) * k
@@ -844,10 +844,10 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
                                       y: CGFloat(slimCy))
                 ci = ci.applyingFilter("CILiquifyEffect", parameters: [
                     "inputCenter": center,
-                    "inputRadius": CGFloat(slimRx * 0.75),
+                    "inputRadius": CGFloat(slimRx * 0.55),
                     "inputAngle": 0.0,
                     "inputScale": 1.0,
-                    "inputDisplacement": CGFloat(-12.0 * beauty.slim),
+                    "inputDisplacement": CGFloat(-8.0 * beauty.slim),
                 ])
             }
         }
