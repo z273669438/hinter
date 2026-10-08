@@ -279,6 +279,20 @@ class HinterCameraPlugin: NSObject, FlutterPlugin {
     private var lastFaceDetect: CFTimeInterval = 0
     private var faceBusy = false
     private var renderCount: Int64 = 0
+
+    /// 美颜合成核(Metal,workflow 编译 default.metallib 注入 app 根目录)
+    private lazy var beautyKernel: CIColorKernel? = {
+        guard let url = Bundle.main.url(forResource: "default",
+                                        withExtension: "metallib"),
+              let data = try? Data(contentsOf: url) else {
+            diag("metallib NOT FOUND -> fallback chain")
+            return nil
+        }
+        let k = CIColorKernel(functionName: "hinterBeauty",
+                              fromMetalLibraryData: data)
+        diag("beautyKernel \(k != nil ? "LOADED" : "BUILD FAILED")")
+        return k
+    }()
     private var audioDbg: Int64 = 0
     /// 瘦脸液化中心的平滑值(每帧 EMA;Swift 禁止 extension 存储属性)
     private var slimCx: Double = -1
@@ -784,66 +798,55 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
         // 1) 高斯模糊(磨皮基础)
         blurFilter?.setValue(ci.clampedToExtent(), forKey: kCIInputImageKey)
         // 磨皮模糊半径:全分辨率像素,过大必然糊崩
-        let sigma = 5.0 + beauty.smooth * 11.0
+        let sigma = 3.5 + beauty.smooth * 7.5
         blurFilter?.setValue(sigma, forKey: kCIInputRadiusKey)
         var blurred = blurFilter?.outputImage
         if let b = blurred {
             blurred = b.cropped(to: extent)
         }
 
-        // 2) 磨皮:边缘保留合成(经典 max/min 组合,去暗斑提亮瑕疵,
-        //    保留轮廓细节);随后 gamma 美白、CITemperatureAndTint 红润、
-        //    CIColorControls 亮度/饱和度。iOS 端瘦脸暂未启用(slim 忽略)
-        // 磨皮:原图→模糊图直接线性混合(CIDissolveTransition)。
-        // 此前的 max/min 边缘保留配方对平滑皮肤几乎零改变(用户反馈
-        // "滑动没变化"的根因);dissolve 每一档强度都肉眼可见
-        if let b = blurred, beauty.smooth > 0.01 {
-            let t = NSNumber(value: 0.15 + 0.75 * beauty.smooth)
-            ci = ci.applyingFilter("CIDissolveTransition", parameters: [
-                "inputTargetImage": b.cropped(to: extent),
-                "inputTime": t,
-            ])
-        }
-        if beauty.whiten > 0.01 {
-            ci = ci.applyingFilter("CIGammaAdjust", parameters: [
-                "inputPower": NSNumber(value: 1.0 - 0.28 * beauty.whiten)])
-        }
-        if beauty.ruddy > 0.01 {
-            ci = ci.applyingFilter("CITemperatureAndTint", parameters: [
-                "inputNeutral": CIVector(x: 6500 - 400 * CGFloat(beauty.ruddy),
-                                         y: 100),
-                "inputTargetNeutral": CIVector(x: 6500, y: 100)])
-        }
-        ci = ci.applyingFilter("CIColorControls", parameters: [
-            kCIInputBrightnessKey: NSNumber(value: beauty.brightness * 0.25),
-            kCIInputSaturationKey: NSNumber(value: 0.78 + beauty.saturation * 0.5)])
-        // iOS 液化瘦脸停用(v21:A12 上性能抖动不可接受;按钮端隐藏)
-        if false {
-            let fw = Double(extent.width), fh = Double(extent.height)
-            let tCx = Double(faceEllipse.x) * fw
-            let tCy = fh - Double(faceEllipse.y) * fh
-                + Double(faceEllipse.w) * fh * 0.12
-            let tRx = Double(faceEllipse.z) * fw
-            if slimCx < 0 {
-                slimCx = tCx; slimCy = tCy; slimRx = tRx
-            }
-            let k = 0.05
-            slimCx += (tCx - slimCx) * k
-            slimCy += (tCy - slimCy) * k
-            slimRx += (tRx - slimRx) * k
-            for side in [-1.0, 1.0] {
-                let center = CIVector(x: CGFloat(slimCx + side * slimRx * 0.85),
-                                      y: CGFloat(slimCy))
-                ci = ci.applyingFilter("CILiquifyEffect", parameters: [
-                    "inputCenter": center,
-                    "inputRadius": CGFloat(slimRx * 0.55),
-                    "inputAngle": 0.0,
-                    "inputScale": 1.0,
-                    "inputDisplacement": CGFloat(-8.0 * beauty.slim),
+        // 2) 美颜:优先 Metal 核(肤色×椭圆掩码,脸部定向,含瘦脸);
+        //    metallib 缺失时回退全屏 CI 链(保底可用)
+        let srcImg = ci
+        if let kernel = beautyKernel, let b = blurred {
+            let fw = CGFloat(faceEllipse.z * 2)
+            let jaw = CIVector(x: fw * 0.46, y: fw * 0.60,
+                               z: fw * 0.86, w: fw * 0.98)
+            let out = kernel.apply(
+                extent: extent,
+                roiCallback: { _, r in r.insetBy(dx: -64, dy: -64) },
+                arguments: [
+                    srcImg, b.cropped(to: extent),
+                    NSNumber(value: beauty.smooth),
+                    NSNumber(value: beauty.whiten),
+                    NSNumber(value: beauty.ruddy),
+                    NSNumber(value: beauty.brightness),
+                    NSNumber(value: 0.78 + beauty.saturation * 0.5),
+                    NSNumber(value: beauty.slim),
+                    CIVector(x: CGFloat(faceEllipse.x),
+                             y: CGFloat(faceEllipse.y),
+                             z: CGFloat(faceEllipse.z),
+                             w: CGFloat(faceEllipse.w)),
+                    NSNumber(value: faceOn ? 1.0 : 0.0),
+                    jaw,
+                ])
+            if let o = out { ci = o }
+        } else {
+            if let b = blurred, beauty.smooth > 0.01 {
+                let t = NSNumber(value: 0.15 + 0.75 * beauty.smooth)
+                ci = ci.applyingFilter("CIDissolveTransition", parameters: [
+                    "inputTargetImage": b.cropped(to: extent),
+                    "inputTime": t,
                 ])
             }
+            if beauty.whiten > 0.01 {
+                ci = ci.applyingFilter("CIGammaAdjust", parameters: [
+                    "inputPower": NSNumber(value: 1.0 - 0.28 * beauty.whiten)])
+            }
+            ci = ci.applyingFilter("CIColorControls", parameters: [
+                kCIInputBrightnessKey: NSNumber(value: beauty.brightness * 0.25),
+                kCIInputSaturationKey: NSNumber(value: 0.78 + beauty.saturation * 0.5)])
         }
-
         // 3) 渲染到输出缓冲,交给 Flutter 预览
         renderCount += 1
         if renderCount == 1 || renderCount % 150 == 0 {

@@ -28,6 +28,15 @@ jobs:
           flutter build ios --release --no-codesign 2>&1 | tee /tmp/build.log
           exit ${PIPESTATUS[0]}
 
+      - name: Compile Metal kernel into app
+        if: steps.build.outcome == 'success'
+        run: |
+          set -e
+          xcrun -sdk iphoneos metal -c ios/Kernel/hinter.metal -o /tmp/hinter.air
+          xcrun -sdk iphoneos metallib /tmp/hinter.air -o /tmp/default.metallib
+          cp /tmp/default.metallib build/ios/iphoneos/Runner.app/default.metallib
+          ls -l build/ios/iphoneos/Runner.app/default.metallib
+
       - name: Package unsigned IPA
         if: steps.build.outcome == 'success'
         run: |
