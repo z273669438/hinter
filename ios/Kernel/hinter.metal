@@ -4,8 +4,9 @@
 // Swift 经 CIColorKernel(functionName:fromMetalLibraryData:) 加载。
 
 #include <metal_stdlib>
-using namespace metal;
 #include <CoreImage/CoreImage.h>
+
+using namespace metal;
 
 // 半宽轮廓插值(jaw 存全宽,h:0=下巴 → 1=颧骨/额角)。
 // C1 连续跨段 mix,消除折角(安卓 v43 同源逻辑)
