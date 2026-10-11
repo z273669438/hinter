@@ -61,8 +61,8 @@ float4 hinterBeauty(sampler s, sampler blur,
         uv = float2(disp.x, 1.0 - disp.y);
     }
 
-    float4 src = s.sample(s, uv);
-    float4 blr = blur.sample(blur, uv);
+    float4 src = s.sample(uv);
+    float4 blr = blur.sample(uv);
     float lum = dot(src.rgb, float3(0.299, 0.587, 0.114));
 
     // ---- 肤色掩码(YCbCr 窗口,同安卓)----
