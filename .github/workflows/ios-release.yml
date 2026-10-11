@@ -28,23 +28,42 @@ jobs:
           flutter build ios --release --no-codesign 2>&1 | tee /tmp/build.log
           exit ${PIPESTATUS[0]}
 
-      - name: Compile Metal kernel into app
-        id: metal
-        if: steps.build.outcome == 'success'
-        continue-on-error: true
-        run: |
-          { xcrun -sdk iphoneos metal -std=ios-metal1.2 -c ios/Kernel/hinter.metal -o /tmp/hinter.air 2>&1 || echo METALC_FAIL; } | tee /tmp/metal.log
-          xcrun -sdk iphoneos metallib /tmp/hinter.air -o /tmp/default.metallib 2>&1 | tee -a /tmp/metal.log || echo METALLIB_FAIL | tee -a /tmp/metal.log
-          cp /tmp/default.metallib build/ios/iphoneos/Runner.app/default.metallib || echo CP_FAIL | tee -a /tmp/metal.log
-          if grep -qE "error|FAIL" /tmp/metal.log; then cat /tmp/metal.log; exit 1; fi
-
       - name: Package unsigned IPA
         if: steps.build.outcome == 'success'
         run: |
+          set -e
           mkdir -p Payload
           cp -r build/ios/iphoneos/Runner.app Payload/
+          xcrun -sdk iphoneos metal -std=ios-metal1.2 -c ios/Kernel/hinter.metal -o /tmp/hinter.air 2>/tmp/metal.log || true
+          [ -f /tmp/hinter.air ] && xcrun -sdk iphoneos metallib /tmp/hinter.air -o /tmp/default.metallib 2>>/tmp/metal.log || true
+          if [ -s /tmp/default.metallib ]; then
+            cp /tmp/default.metallib Payload/Runner.app/default.metallib
+            echo "METALLIB_INJECTED $(stat -c%s /tmp/default.metallib)" | tee /tmp/metalstatus
+          else
+            echo "METALLIB_FAILED" | tee /tmp/metalstatus
+            tail -12 /tmp/metal.log | tee -a /tmp/metalstatus
+          fi
           zip -qr hinter-ios-unsigned.ipa Payload
+          unzip -l hinter-ios-unsigned.ipa | grep -q metallib && echo "VERIFIED_IN_ZIP" | tee -a /tmp/metalstatus || echo "NOT_IN_ZIP" | tee -a /tmp/metalstatus
           ls -lh hinter-ios-unsigned.ipa
+
+      - name: Report metal status
+        if: steps.build.outcome == 'success'
+        env:
+          GHT: ${{ secrets.GITHUB_TOKEN }}
+          TITLEX: metal-status
+        run: |
+          python3 - <<'PYX'
+          import json, os, urllib.request
+          body = open('/tmp/metalstatus', errors='ignore').read()[-1500:]
+          data = json.dumps({"title": "METAL-STATUS run" + os.environ["GITHUB_RUN_NUMBER"] + " " + body.split()[0],
+                             "body": body}).encode()
+          req = urllib.request.Request(
+            "https://api.github.com/repos/" + os.environ["GITHUB_REPOSITORY"] + "/issues",
+            data=data, headers={"Authorization": "Bearer " + os.environ["GHT"],
+                                "Accept": "application/vnd.github+json"})
+          print("issue:", urllib.request.urlopen(req).status)
+          PYX
 
       - name: Publish as GitHub Release
         if: steps.build.outcome == 'success'
