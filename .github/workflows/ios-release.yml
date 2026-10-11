@@ -34,11 +34,11 @@ jobs:
           set -e
           mkdir -p Payload
           cp -r build/ios/iphoneos/Runner.app Payload/
-          xcrun -sdk iphoneos metal -c ios/Kernel/hinter.metal -o /tmp/hinter.air 2>/tmp/metal.log || true
+          xcrun -sdk iphoneos metal -target air64-apple-ios13.0 -c ios/Kernel/hinter.metal -o /tmp/hinter.air 2>/tmp/metal.log || true
           [ -f /tmp/hinter.air ] && xcrun -sdk iphoneos metallib /tmp/hinter.air -o /tmp/default.metallib 2>>/tmp/metal.log || true
           if [ -s /tmp/default.metallib ]; then
             cp /tmp/default.metallib Payload/Runner.app/default.metallib
-            echo "METALLIB_INJECTED $(stat -c%s /tmp/default.metallib)" | tee /tmp/metalstatus
+            echo "METALLIB_INJECTED $(stat -f%z /tmp/default.metallib) bytes" | tee /tmp/metalstatus
           else
             echo "METALLIB_FAILED" | tee /tmp/metalstatus
             tail -12 /tmp/metal.log | tee -a /tmp/metalstatus
