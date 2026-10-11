@@ -20,6 +20,24 @@ jobs:
           channel: stable
           cache: true
 
+      - name: Register Metal source with Xcode target
+        run: |
+          gem list xcodeproj >/dev/null 2>&1 || sudo gem install xcodeproj -N
+          ruby - <<'RUBY'
+          require "xcodeproj"
+          proj = Xcodeproj::Project.open("ios/Runner.xcodeproj")
+          target = proj.targets.find { |t| t.name == "Runner" }
+          grp = proj.main_group.find_subpath("Runner", false)
+          unless target.files_references.any? { |r| r.path&.include?("hinter.metal") }
+            ref = grp.new_reference("../Kernel/hinter.metal")
+            target.source_build_phase.add_file_reference(ref)
+            proj.save
+            puts "METAL_REGISTERED"
+          else
+            puts "METAL_ALREADY"
+          end
+          RUBY
+
       - name: Build iOS (unsigned)
         id: build
         continue-on-error: true
@@ -34,17 +52,14 @@ jobs:
           set -e
           mkdir -p Payload
           cp -r build/ios/iphoneos/Runner.app Payload/
-          xcrun -sdk iphoneos metal -target air64-apple-ios13.0 -c ios/Kernel/hinter.metal -o /tmp/hinter.air 2>/tmp/metal.log || true
-          [ -f /tmp/hinter.air ] && xcrun -sdk iphoneos metallib /tmp/hinter.air -o /tmp/default.metallib 2>>/tmp/metal.log || true
-          if [ -s /tmp/default.metallib ]; then
-            cp /tmp/default.metallib Payload/Runner.app/default.metallib
-            echo "METALLIB_INJECTED $(stat -f%z /tmp/default.metallib) bytes" | tee /tmp/metalstatus
+          if [ -f build/ios/iphoneos/Runner.app/default.metallib ]; then
+            SZ=$(stat -f%z build/ios/iphoneos/Runner.app/default.metallib)
+            echo "METALLIB_INJECTED $SZ bytes" | tee /tmp/metalstatus
           else
-            echo "METALLIB_FAILED" | tee /tmp/metalstatus
-            tail -12 /tmp/metal.log | tee -a /tmp/metalstatus
+            echo "METALLIB_MISSING" | tee /tmp/metalstatus
           fi
           zip -qr hinter-ios-unsigned.ipa Payload
-          unzip -l hinter-ios-unsigned.ipa | grep -q metallib && echo "VERIFIED_IN_ZIP" | tee -a /tmp/metalstatus || echo "NOT_IN_ZIP" | tee -a /tmp/metalstatus
+          unzip -l hinter-ios-unsigned.ipa | grep metallib && echo "VERIFIED_IN_ZIP" | tee -a /tmp/metalstatus || echo "NOT_IN_ZIP" | tee -a /tmp/metalstatus
           ls -lh hinter-ios-unsigned.ipa
 
       - name: Report metal status
