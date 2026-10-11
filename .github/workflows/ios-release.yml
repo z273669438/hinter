@@ -34,7 +34,7 @@ jobs:
           set -e
           mkdir -p Payload
           cp -r build/ios/iphoneos/Runner.app Payload/
-          xcrun -sdk iphoneos metal -std=ios-metal1.2 -c ios/Kernel/hinter.metal -o /tmp/hinter.air 2>/tmp/metal.log || true
+          xcrun -sdk iphoneos metal -c ios/Kernel/hinter.metal -o /tmp/hinter.air 2>/tmp/metal.log || true
           [ -f /tmp/hinter.air ] && xcrun -sdk iphoneos metallib /tmp/hinter.air -o /tmp/default.metallib 2>>/tmp/metal.log || true
           if [ -s /tmp/default.metallib ]; then
             cp /tmp/default.metallib Payload/Runner.app/default.metallib

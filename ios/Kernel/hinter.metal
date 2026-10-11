@@ -4,6 +4,7 @@
 // Swift 经 CIColorKernel(functionName:fromMetalLibraryData:) 加载。
 
 #include <metal_stdlib>
+#include <CoreImage/CoreImage.h>
 
 using namespace metal;
 
@@ -27,16 +28,11 @@ extern "C" { namespace coreimage {
 // smoothA/whitenA/ruddyA/brightA/satMul/slimA=强度,
 // face=(cx, cyTop, rx, ry) 显示坐标(y 顶基),faceOn=0/1,
 // jaw=4 级全宽轮廓(无 FaceMesh 时传默认近似)
-float4 hinterBeauty(texture2d<float> srcTex [[texture(0)]],
-                    texture2d<float> blurTex [[texture(1)]],
+float4 hinterBeauty(sampler s, sampler blur,
                     float smoothA, float whitenA, float ruddyA,
                     float brightA, float satMul, float slimA,
                     float4 face, float faceOn, float4 jaw) {
-    constexpr smgr(coord::normalized, filter::linear,
-                   address::clamp_to_edge);
-    uint w = get_texture_width(srcTex);
-    uint h = get_texture_height(srcTex);
-    float2 uv = destCoord() / float2(w, h); // 左下原点 0..1
+    float2 uv = s.coord();                  // 左下原点 0..1
     float2 disp = float2(uv.x, 1.0 - uv.y); // 左上原点(与 face 参数同基)
     float faceActive = faceOn;
     float2 fc = mix(float2(0.5, 0.5), face.xy, faceOn);
@@ -65,8 +61,8 @@ float4 hinterBeauty(texture2d<float> srcTex [[texture(0)]],
         uv = float2(disp.x, 1.0 - disp.y);
     }
 
-    float4 src = smgr.sample(srcTex, uv);
-    float4 blr = smgr.sample(blurTex, uv);
+    float4 src = s.sample(s, uv);
+    float4 blr = blur.sample(blur, uv);
     float lum = dot(src.rgb, float3(0.299, 0.587, 0.114));
 
     // ---- 肤色掩码(YCbCr 窗口,同安卓)----
