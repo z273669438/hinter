@@ -36,7 +36,7 @@ jobs:
           { xcrun -sdk iphoneos metal -std=ios-metal1.2 -c ios/Kernel/hinter.metal -o /tmp/hinter.air 2>&1 || echo METALC_FAIL; } | tee /tmp/metal.log
           xcrun -sdk iphoneos metallib /tmp/hinter.air -o /tmp/default.metallib 2>&1 | tee -a /tmp/metal.log || echo METALLIB_FAIL | tee -a /tmp/metal.log
           cp /tmp/default.metallib build/ios/iphoneos/Runner.app/default.metallib || echo CP_FAIL | tee -a /tmp/metal.log
-          grep -qE "error|FAIL" /tmp/metal.log && { cat /tmp/metal.log; exit 1; } || true
+          if grep -qE "error|FAIL" /tmp/metal.log; then cat /tmp/metal.log; exit 1; fi
 
       - name: Package unsigned IPA
         if: steps.build.outcome == 'success'
