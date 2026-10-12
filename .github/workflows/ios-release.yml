@@ -21,22 +21,35 @@ jobs:
           cache: true
 
       - name: Register Metal source with Xcode target
+        id: reg
+        continue-on-error: true
         run: |
-          gem list xcodeproj >/dev/null 2>&1 || sudo gem install xcodeproj -N
-          ruby - <<'RUBY'
-          require "xcodeproj"
-          proj = Xcodeproj::Project.open("ios/Runner.xcodeproj")
-          target = proj.targets.find { |t| t.name == "Runner" }
-          grp = proj.main_group.find_subpath("Runner", false)
-          unless target.files_references.any? { |r| r.path&.include?("hinter.metal") }
-            ref = grp.new_reference("../Kernel/hinter.metal")
-            target.source_build_phase.add_file_reference(ref)
-            proj.save
-            puts "METAL_REGISTERED"
-          else
-            puts "METAL_ALREADY"
+          set +e
+          ruby - <<'RUBY' | tee /tmp/reg.log
+          begin
+            require "xcodeproj"
+            puts "xcodeproj #{$LOAD_PATH.any? ? "OK" : "?"}"
+            proj = Xcodeproj::Project.open("ios/Runner.xcodeproj")
+            puts "targets: " + proj.targets.map(&:name).join(",")
+            target = proj.targets.find { |t| t.name == "Runner" } || proj.targets.first
+            grp = proj.main_group.find_subpath("Runner", false) ||
+                  proj.main_group.children.find { |c| c.display_name == "Runner" }
+            puts "group: #{grp.class}"
+            already = target.source_build_phase.files_references.any? { |r| (r.path || "").include?("hinter.metal") }
+            if already
+              puts "METAL_ALREADY"
+            else
+              ref = grp.new_reference("../Kernel/hinter.metal")
+              target.source_build_phase.add_file_reference(ref)
+              proj.save
+              puts "METAL_REGISTERED"
+            end
+          rescue => e
+            puts "REG_ERROR: #{e.class}: #{e.message}"
+            exit 2
           end
           RUBY
+          grep -qE "METAL_REGISTERED|METAL_ALREADY" /tmp/reg.log
 
       - name: Build iOS (unsigned)
         id: build
@@ -63,15 +76,17 @@ jobs:
           ls -lh hinter-ios-unsigned.ipa
 
       - name: Report metal status
-        if: steps.build.outcome == 'success'
+        if: always()
         env:
           GHT: ${{ secrets.GITHUB_TOKEN }}
-          TITLEX: metal-status
         run: |
+          [ -f /tmp/metalstatus ] || echo "NO_STATUS (build skipped/reg failed)" > /tmp/metalstatus
+          { echo "---- reg ----"; tail -14 /tmp/reg.log 2>/dev/null; } >> /tmp/metalstatus
           python3 - <<'PYX'
           import json, os, urllib.request
-          body = open('/tmp/metalstatus', errors='ignore').read()[-1500:]
-          data = json.dumps({"title": "METAL-STATUS run" + os.environ["GITHUB_RUN_NUMBER"] + " " + body.split()[0],
+          body = open('/tmp/metalstatus', errors='ignore').read()[-1400:]
+          first = body.split()[0] if body.split() else 'NA'
+          data = json.dumps({"title": "MSTAT run" + os.environ["GITHUB_RUN_NUMBER"] + " " + first,
                              "body": body}).encode()
           req = urllib.request.Request(
             "https://api.github.com/repos/" + os.environ["GITHUB_REPOSITORY"] + "/issues",
@@ -79,15 +94,6 @@ jobs:
                                 "Accept": "application/vnd.github+json"})
           print("issue:", urllib.request.urlopen(req).status)
           PYX
-
-      - name: Publish as GitHub Release
-        if: steps.build.outcome == 'success'
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ios-test-1
-          name: Hinter iOS 测试版 1
-          body: 未签名 ipa,Sideloadly 签名安装
-          files: hinter-ios-unsigned.ipa
 
       - name: Report build errors as issue
         if: steps.build.outcome == 'failure' || steps.metal.outcome == 'failure'
