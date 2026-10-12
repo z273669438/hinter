@@ -17,6 +17,21 @@
      ② 目标名不是 "Runner"(Flutter 模板可能不同)③ new_reference 路径写法
    - 明天先跑一个只 `ruby -e 'require "xcodeproj"; puts Xcodeproj::VERSION'` + 列 targets 的调试 job 定位
 
+## v28 之后的进展(2026-10-12 收工)
+- v26 证实 ruby 注册成功(METAL_REGISTERED,xcodeproj 可用)→ 失败点收敛为
+  **Xcode 编译 hinter.metal 报错**,错误内容被 build 日志噪音淹没
+- v28 已重写 workflow(之前 patch 事故把 yml 写坏 431KB,已修复+YAML 校验,
+  **已推送远端**),report 步骤会把 metal 错误行+build.log 尾部强制发到 issue
+- **10-12 起 macOS 分钟额度耗尽**(job 0 步骤秒失败)→ 等 11-01 重置
+
+## 下月恢复只需两步
+1. 触发:`gh api .../workflows/ios-release.yml/dispatches -f ref=main`
+   (或仓库 Actions 页手动 Run workflow)
+2. 读最新 MSTAT issue → 拿到 Xcode 对 hinter.metal 的真实报错 →
+   针对性修一次 → 构建成功 → 验 MSTAT "METALLIB_INJECTED <数字>" > 2KB →
+   断点续传下载 → 装机 → 拉沙盒日志确认 beautyKernel LOADED →
+   装机验磨皮/美白定向+瘦脸 → 拆埋点出正式版
+
 ## 关键事实
 - release tag: ios-test-1(每次构建覆盖资产);当前资产 631040483 = run45(空库版,无用)
 - 构建状态自动上报:issue 标题 METAL-STATUS(含 metallib 真实字节数)——以 >2KB 为成功标志
