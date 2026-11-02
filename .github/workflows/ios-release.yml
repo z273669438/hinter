@@ -32,11 +32,11 @@ jobs:
             puts "targets: " + proj.targets.map(&:name).join(",")
             target = proj.targets.find { |t| t.name == "Runner" } || proj.targets.first
             grp = proj.main_group.find_subpath("Runner", false)
-            already = target.source_build_phase.files_references.any? { |r| (r.path || "").include?("hinter.metal") }
+            already = target.source_build_phase.files_references.any? { |r| (r.path || "").include?("hinter.ci.metal") }
             if already
               puts "METAL_ALREADY"
             else
-              ref = grp.new_reference("../Kernel/hinter.metal")
+              ref = grp.new_reference("../Kernel/hinter.ci.metal")
               target.source_build_phase.add_file_reference(ref)
               proj.save
               puts "METAL_REGISTERED"

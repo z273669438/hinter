@@ -1,7 +1,7 @@
 // hinter.metal — 美颜合成核(移植自安卓 GLSL beautyCombine)
 // 单次 pass:瘦脸位移采样 + 肤色/椭圆掩码磨皮 + 定向美白红润 + 全局亮度/饱和度
-// 编译:workflow 中 xcrun metal 编成 default.metallib 注入 Runner.app,
-// Swift 经 CIColorKernel(functionName:fromMetalLibraryData:) 加载。
+// 编译:Xcode 内置 Core Image Kernel 规则(.ci.metal 扩展触发,-fcikernel 装饰)
+// 产出 default.metallib;Swift 经 CIColorKernel(functionName:fromMetalLibraryData:) 加载。
 
 #include <metal_stdlib>
 #include <CoreImage/CoreImage.h>
