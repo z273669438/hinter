@@ -1,44 +1,45 @@
-# iOS Metal 美颜核 — 进度备忘(今晚收工快照)
+# iOS Metal 美颜核 — 进度备忘(2026-11-03 凌晨,核已编成,待装机)
 
-## 当前设备状态
-- iPad 装着 **v23b(版本 1.0.22,回退链)**:全屏滤镜美颜(可用但非脸部定向),跟读已修好(SENT 计数正常)
-- 本机已有下载缓存:`E:\hinter-v23.ipa`(96B 空 metallib,装了也是回退,勿再装同类)
+## 🎉 里程碑:v31 构建全绿,CI 内核 11457 字节 sym=2,已注入 ipa
+96 字节空库之谜终结。完整根因链(以后别再踩):
+1. CI 内核编译需 `-fcikernel`(函数才算入口点)——v23b 手工编译缺它 → 空库
+2. 链接需 `metallib -cikernel` ——v29/v30 走 Xcode 规则编译 `.ci.metal`,
+   Xcode 内置规则在这条工具链上不生效,air-lld 报 `symbol(s) not found`
+3. 最终方案(v31,已提交):**完全绕开 Xcode**,workflow 手工执行:
+   xcrun -sdk iphoneos metal -fcikernel -c -target air64-apple-ios15.0.0
+     ios/Kernel/hinter.ci.metal -o /tmp/hinter.ci.air
+   xcrun -sdk iphoneos metallib -cikernel /tmp/hinter.ci.air -o /tmp/hinter.metallib
+   然后注入 Payload/Runner.app/default.metallib,strings 验 hinterBeauty 符号
 
-## 目标
-脸部定向美颜 + 可用瘦脸 = hinter.metal 核真正加载成功(设备日志出现 `beautyKernel LOADED`)
+## 顺手排掉的另两个坑
+- run#50/51 构建失败真因(被噪音淹没数轮):shared_preferences_foundation-2.6.1
+  生成代码含 Swift 6.1 尾逗号,Xcode 15.4 编不动 → runner 换 macos-15(默认 Xcode 16.4)
+- **macos-14 镜像 2026-11-02 起已完全退役**,以后必须 macos-15+
 
-## 失败链回顾(明天从这里继续)
-1. v22d/e:手工 xcrun 编译报 `sampler2d unknown` / `destCoord undeclared`
-2. v23b:sampler 成员 `sample(uv)` 语法通过,金属编译"成功"但产物 **96 字节空库**
-3. v24:加 `-target air64-apple-ios13.0` 仍 96 字节 → 手工 xcrun 路线放弃
-4. v25:改用 ruby xcodeproj 把 hinter.metal 注册进 Runner target,让 Xcode 编译
-   - **失败点:`Register Metal source with Xcode target -> failure`(原因未查明)**
-   - 候选原因:① `sudo gem install xcodeproj` 在 runner 上失败/已存在版本冲突
-     ② 目标名不是 "Runner"(Flutter 模板可能不同)③ new_reference 路径写法
-   - 明天先跑一个只 `ruby -e 'require "xcodeproj"; puts Xcodeproj::VERSION'` + 列 targets 的调试 job 定位
+## 当前状态
+- release 资产已更新为 run#53 版(262241523 字节,2026-11-02T17:40Z)
+- ipa 下载:私有仓库 browser_download_url 404(即使带 token),必须走
+  **API octet-stream**:GET /releases/assets/702611127 + Accept: application/octet-stream
+  + `-x http://127.0.0.1:7890`(本机代理)+ `curl -C -` 断点续传
+  脚本:/c/tmp/dl_ipa2.sh → **E:\hinter-v30.ipa**(校验含 zip 完整性+metallib 字节+版本)
+- 版本 1.0.23+23(装机后 pymobiledevice3 apps list 可区分新旧)
 
-## v28 之后的进展(2026-10-12 收工)
-- v26 证实 ruby 注册成功(METAL_REGISTERED,xcodeproj 可用)→ 失败点收敛为
-  **Xcode 编译 hinter.metal 报错**,错误内容被 build 日志噪音淹没
-- v28 已重写 workflow(之前 patch 事故把 yml 写坏 431KB,已修复+YAML 校验,
-  **已推送远端**),report 步骤会把 metal 错误行+build.log 尾部强制发到 issue
-- **10-12 起 macOS 分钟额度耗尽**(job 0 步骤秒失败)→ 等 11-01 重置
+## 下一步(睡醒后)
+1. Sideloadly 装 E:\hinter-v30.ipa
+2. 拉日志验核:`pymobiledevice3 apps pull com.hinter.hinter.562DJX6G75
+   Documents/hinter_diag.log <本地>` → grep beautyKernel → 期望 **LOADED**
+3. 实测:磨皮/美白是否脸部定向(不再全屏)、瘦脸是否生效不抖
+4. 注意:face 坐标系假设——metal 里 `disp=(uv.x, 1-uv.y)` 假定 coord() 是左下原点;
+   若装机后发现掩码上下颠倒(磨皮落在背景),把 disp 翻转即可(一处改动)
+5. 验证通过 → 拆埋点(Ddiag、四层音频埋点、ciWrite、frame70.png)出正式版
 
-## 下月恢复只需两步
-1. 触发:`gh api .../workflows/ios-release.yml/dispatches -f ref=main`
-   (或仓库 Actions 页手动 Run workflow)
-2. 读最新 MSTAT issue → 拿到 Xcode 对 hinter.metal 的真实报错 →
-   针对性修一次 → 构建成功 → 验 MSTAT "METALLIB_INJECTED <数字>" > 2KB →
-   断点续传下载 → 装机 → 拉沙盒日志确认 beautyKernel LOADED →
-   装机验磨皮/美白定向+瘦脸 → 拆埋点出正式版
+## 额度
+- 今晚消耗 4 runs(#50~#53,含一次排队被取消),约 15 build 分钟 = 150 计费分钟
+- 私有仓库 macOS 10x 计费;11 月剩 ~1850 计费分钟 ≈ 18 次构建,够用
+- gh CLI 本机不可用(不在 PATH),用 git credential 里的 token 走 REST:
+  `printf "protocol=https\nhost=github.com\n\n" | git credential fill` → password
 
-## 关键事实
-- release tag: ios-test-1(每次构建覆盖资产);当前资产 631040483 = run45(空库版,无用)
-- 构建状态自动上报:issue 标题 METAL-STATUS(含 metallib 真实字节数)——以 >2KB 为成功标志
-- 下载通道:GitHub API 直连不稳,用 curl -L -C - 循环断点续传(已验证可断点续);用户重启电脑会中断循环,说"续传"可恢复
-- 额度:GitHub Actions macOS 10x 计费,本月已用约大半;新周期若不够,先本地修好语法再构建
-
-## 设备端诊断命令速查
+## 设备端诊断命令速查(不变)
 - 拉日志:`pymobiledevice3 apps pull com.hinter.hinter.562DJX6G75 Documents/hinter_diag.log <本地>`
 - 查版本:`pymobiledevice3 apps list`
 - 判定成功:`grep beautyKernel` → LOADED
