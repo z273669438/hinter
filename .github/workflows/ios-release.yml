@@ -20,33 +20,21 @@ jobs:
           channel: stable
           cache: true
 
-      - name: Register Metal source with Xcode target
-        id: reg
+      # CI 内核手工编译(不经 Xcode;链接必须 -cikernel,否则 air-lld 报缺符号)
+      - name: Compile CI kernel
+        id: kern
         continue-on-error: true
         run: |
-          ruby - <<'RUBY' | tee /tmp/reg.log
-          begin
-            require "xcodeproj"
-            puts "xcodeproj OK"
-            proj = Xcodeproj::Project.open("ios/Runner.xcodeproj")
-            puts "targets: " + proj.targets.map(&:name).join(",")
-            target = proj.targets.find { |t| t.name == "Runner" } || proj.targets.first
-            grp = proj.main_group.find_subpath("Runner", false)
-            already = target.source_build_phase.files_references.any? { |r| (r.path || "").include?("hinter.ci.metal") }
-            if already
-              puts "METAL_ALREADY"
-            else
-              ref = grp.new_reference("../Kernel/hinter.ci.metal")
-              target.source_build_phase.add_file_reference(ref)
-              proj.save
-              puts "METAL_REGISTERED"
-            end
-          rescue => e
-            puts "REG_ERROR: #{e.class}: #{e.message}"
-            exit 2
-          end
-          RUBY
-          grep -qE "METAL_REGISTERED|METAL_ALREADY" /tmp/reg.log
+          set +e
+          xcrun -sdk iphoneos metal -fcikernel -c \
+            -target air64-apple-ios15.0.0 \
+            ios/Kernel/hinter.ci.metal -o /tmp/hinter.ci.air 2>&1 | tee /tmp/kern.log
+          xcrun -sdk iphoneos metallib -cikernel /tmp/hinter.ci.air \
+            -o /tmp/hinter.metallib 2>&1 | tee -a /tmp/kern.log
+          SZ=$(stat -f%z /tmp/hinter.metallib 2>/dev/null || echo 0)
+          SYM=$(strings /tmp/hinter.metallib 2>/dev/null | grep -c hinterBeauty || true)
+          echo "KERN $SZ bytes sym=$SYM" | tee -a /tmp/kern.log
+          [ "$SYM" -ge 1 ] && [ "$SZ" -gt 2048 ]
 
       - name: Build iOS (unsigned)
         id: build
@@ -62,8 +50,11 @@ jobs:
           set -e
           mkdir -p Payload
           cp -r build/ios/iphoneos/Runner.app Payload/
-          if [ -s build/ios/iphoneos/Runner.app/default.metallib ]; then
-            SZ=$(stat -f%z build/ios/iphoneos/Runner.app/default.metallib)
+          if [ -s /tmp/hinter.metallib ]; then
+            cp -f /tmp/hinter.metallib Payload/Runner.app/default.metallib
+          fi
+          if [ -s Payload/Runner.app/default.metallib ]; then
+            SZ=$(stat -f%z Payload/Runner.app/default.metallib)
             echo "METALLIB_INJECTED $SZ bytes" > /tmp/metalstatus
           else
             echo "METALLIB_MISSING" > /tmp/metalstatus
@@ -86,9 +77,9 @@ jobs:
           GHT: ${{ secrets.GITHUB_TOKEN }}
         run: |
           [ -f /tmp/metalstatus ] || echo "NO_STATUS" > /tmp/metalstatus
-          { echo "---- reg ----"; tail -12 /tmp/reg.log 2>/dev/null
+          { echo "---- kern ----"; tail -12 /tmp/kern.log 2>/dev/null
             echo "---- build-errors ----"
-            grep -E "error:" /tmp/build.log 2>/dev/null | grep -iE "metal|expected|unknown|undeclared|no member|too " | head -25
+            grep -E "error:" /tmp/build.log 2>/dev/null | grep -iE "metal|expected|unknown|undeclared|no member|too |not found|symbol" | head -25
             tail -18 /tmp/build.log 2>/dev/null; } >> /tmp/metalstatus
           python3 - <<'PYX'
           import json, os, urllib.request
