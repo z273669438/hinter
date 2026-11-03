@@ -288,10 +288,15 @@ class HinterCameraPlugin: NSObject, FlutterPlugin {
             diag("metallib NOT FOUND -> fallback chain")
             return nil
         }
-        let k = try? CIColorKernel(functionName: "hinterBeauty",
-                                   fromMetalLibraryData: data)
-        diag("beautyKernel \(k != nil ? "LOADED" : "BUILD FAILED")")
-        return k
+        do {
+            let k = try CIColorKernel(functionName: "hinterBeauty",
+                                      fromMetalLibraryData: data)
+            diag("beautyKernel LOADED")
+            return k
+        } catch {
+            diag("beautyKernel BUILD FAILED: \(error)")
+            return nil
+        }
     }()
     private var audioDbg: Int64 = 0
     /// 瘦脸液化中心的平滑值(每帧 EMA;Swift 禁止 extension 存储属性)
@@ -795,28 +800,17 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
         var ci = CIImage(cvPixelBuffer: pb)
         let extent = ci.extent
 
-        // 1) 高斯模糊(磨皮基础)
-        blurFilter?.setValue(ci.clampedToExtent(), forKey: kCIInputImageKey)
-        // 磨皮模糊半径:全分辨率像素,过大必然糊崩
-        let sigma = 3.5 + beauty.smooth * 7.5
-        blurFilter?.setValue(sigma, forKey: kCIInputRadiusKey)
-        var blurred = blurFilter?.outputImage
-        if let b = blurred {
-            blurred = b.cropped(to: extent)
-        }
-
-        // 2) 美颜:优先 Metal 核(肤色×椭圆掩码,脸部定向,含瘦脸);
-        //    metallib 缺失时回退全屏 CI 链(保底可用)
-        let srcImg = ci
-        if let kernel = beautyKernel, let b = blurred {
+        // 美颜:优先 Metal 核(核内模糊,单输入图像;肤色×椭圆掩码,脸部定向,含瘦脸);
+        //    metallib 缺失/加载失败时回退全屏 CI 链(保底可用,强度刻意压低)
+        if let kernel = beautyKernel {
             let fw = CGFloat(faceEllipse.z * 2)
             let jaw = CIVector(x: fw * 0.46, y: fw * 0.60,
                                z: fw * 0.86, w: fw * 0.98)
             let out = kernel.apply(
                 extent: extent,
-                roiCallback: { _, r in r.insetBy(dx: -64, dy: -64) },
+                roiCallback: { _, r in r.insetBy(dx: -96, dy: -96) },
                 arguments: [
-                    srcImg, b.cropped(to: extent),
+                    ci,
                     NSNumber(value: beauty.smooth),
                     NSNumber(value: beauty.whiten),
                     NSNumber(value: beauty.ruddy),
@@ -829,19 +823,25 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
                              w: CGFloat(faceEllipse.w)),
                     NSNumber(value: faceOn ? 1.0 : 0.0),
                     jaw,
+                    CIVector(x: 1.0 / max(extent.width, 1),
+                             y: 1.0 / max(extent.height, 1)),
                 ])
             if let o = out { ci = o }
         } else {
-            if let b = blurred, beauty.smooth > 0.01 {
-                let t = NSNumber(value: 0.15 + 0.75 * beauty.smooth)
-                ci = ci.applyingFilter("CIDissolveTransition", parameters: [
-                    "inputTargetImage": b.cropped(to: extent),
-                    "inputTime": t,
-                ])
+            // 回退链:全屏高斯磨皮 + 提亮(仅在核不可用时生效)
+            if beauty.smooth > 0.01 {
+                blurFilter?.setValue(ci.clampedToExtent(), forKey: kCIInputImageKey)
+                blurFilter?.setValue(2.5 + beauty.smooth * 5.5, forKey: kCIInputRadiusKey)
+                if let b = blurFilter?.outputImage?.cropped(to: extent) {
+                    ci = ci.applyingFilter("CIDissolveTransition", parameters: [
+                        "inputTargetImage": b,
+                        "inputTime": NSNumber(value: 0.05 + 0.30 * beauty.smooth),
+                    ])
+                }
             }
             if beauty.whiten > 0.01 {
                 ci = ci.applyingFilter("CIGammaAdjust", parameters: [
-                    "inputPower": NSNumber(value: 1.0 - 0.28 * beauty.whiten)])
+                    "inputPower": NSNumber(value: 1.0 - 0.12 * beauty.whiten)])
             }
             ci = ci.applyingFilter("CIColorControls", parameters: [
                 kCIInputBrightnessKey: NSNumber(value: beauty.brightness * 0.25),

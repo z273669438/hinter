@@ -551,13 +551,15 @@ class LineFollower {
   void _release(double dt) {
     // 消除"走走停停":窗口转写每 2-5s 才更新一次位置,若显示追平
     // 识别位置就停下,画面必然一顿一顿。只要转写流仍活跃(用户持续
-    // 在说),显示就以显示速度持续外推,上限 _mpos+14 —— 该上限恰好
-    // 补偿解码延迟期间用户多念的字数,不会越过正在念的位置;
-    // 转写流静默(停读 6s)后回落到 _mpos+6,随即自然停住
-    final active = _lastTranscriptMs > 0 &&
-        DateTime.now().millisecondsSinceEpoch - _lastTranscriptMs < 5000;
+    // 在说),显示就以显示速度持续外推,上限 _mpos+10 —— 该上限恰好
+    // 补偿解码延迟期间用户多念的字数,不会越过正在念的位置。
+    // 停读判定收紧到 1.2s(流式 partial 说话时每 0.2~0.5s 就有一次),
+    // 且外推速度随静默时长平滑衰减 → 停读时高亮"惯性滑停"而不是
+    // 继续匀速爬 5 秒(v24 用户反馈"停得慢")。
+    final sinceData = DateTime.now().millisecondsSinceEpoch - _lastTranscriptMs;
+    final active = _lastTranscriptMs > 0 && sinceData < 1200;
     final caughtUp = _offset >= _mpos; // 已追平识别位置(处于外推段)
-    final target = _mpos + (active ? 10 : 6);
+    final target = _mpos + (active ? 10 : 2);
     final gap = target - _offset;
     if (gap <= 0) {
       _debt = 0;
@@ -573,8 +575,9 @@ class LineFollower {
     if (caughtUp && active) {
       // 外推段:严格按实测语速恒速前进。转写每 2-5s 落一帧 mpos,
       // 期间显示恰好走完同样的距离 → 运动连续,不再走走停停。
-      // 用固定高速反而会冲到上限然后干等 → 又变成台阶
-      rate = _userRate.clamp(1.5, 9.0);
+      // 静默超过 0.4s 后线性减速到 15%,停读即滑停
+      final stale = (sinceData - 400).clamp(0, 1600) / 1600.0;
+      rate = _userRate.clamp(1.5, 9.0) * (1.0 - stale * 0.85);
     } else {
       // 追赶段:显示速度 = 语速 110% + 温和的欠账加速
       final excess = math.max(0.0, gap - 4.0);

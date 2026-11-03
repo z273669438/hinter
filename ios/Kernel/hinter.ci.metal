@@ -1,15 +1,20 @@
-// hinter.metal — 美颜合成核(移植自安卓 GLSL beautyCombine)
-// 单次 pass:瘦脸位移采样 + 肤色/椭圆掩码磨皮 + 定向美白红润 + 全局亮度/饱和度
-// 编译:Xcode 内置 Core Image Kernel 规则(.ci.metal 扩展触发,-fcikernel 装饰)
-// 产出 default.metallib;Swift 经 CIColorKernel(functionName:fromMetalLibraryData:) 加载。
+// hinter.ci.metal — 美颜合成核(移植自安卓 GLSL beautyCombine)
+// 单 pass:瘦脸位移采样 + 核内环形模糊磨皮 + 肤色×椭圆双掩码 + 定向美白红润
+//
+// 关键约束:CIColorKernel 只接受 **1 个** 输入图像!所以模糊在核内做
+// (两圈 8 点环均值近似高斯),不引入第二个 sampler —— v31 装机实测
+// "BUILD FAILED" 就是多图像签名被拒。
+//
+// 编译(必须两步,缺一即空库/链接失败):
+//   xcrun metal -fcikernel -c -target air64-apple-ios15.0.0 hinter.ci.metal -o k.air
+//   xcrun metallib -cikernel k.air -o default.metallib
 
 #include <metal_stdlib>
 #include <CoreImage/CoreImage.h>
 
 using namespace metal;
 
-// 半宽轮廓插值(jaw 存全宽,h:0=下巴 → 1=颧骨/额角)。
-// C1 连续跨段 mix,消除折角(安卓 v43 同源逻辑)
+// 半宽轮廓插值(jaw 存全宽,h:0=下巴 → 1=颧骨/额角)。C1 连续跨段 mix,消除折角
 static inline float jawHalf(float4 jaw, float hh) {
     float a0 = jaw.x * 0.5;
     float a1 = jaw.y * 0.5;
@@ -22,24 +27,39 @@ static inline float jawHalf(float4 jaw, float hh) {
     return mix(m, sC, smoothstep(0.50, 0.84, hh));
 }
 
+namespace coreimage {
+
+// 8 点环均值(uv 归一化,左下原点;r 为像素半径)
+static inline float3 ringAvg(sampler s, float2 uv, float2 texel, float r) {
+    float2 o = texel * r;
+    float3 a = s.sample(uv + float2( 0.92388,  0.38268) * o).rgb;
+    a += s.sample(uv + float2( 0.38268,  0.92388) * o).rgb;
+    a += s.sample(uv + float2(-0.38268,  0.92388) * o).rgb;
+    a += s.sample(uv + float2(-0.92388,  0.38268) * o).rgb;
+    a += s.sample(uv + float2(-0.92388, -0.38268) * o).rgb;
+    a += s.sample(uv + float2(-0.38268, -0.92388) * o).rgb;
+    a += s.sample(uv + float2( 0.38268, -0.92388) * o).rgb;
+    a += s.sample(uv + float2( 0.92388, -0.38268) * o).rgb;
+    return a * 0.125;
+}
+
+}
+
 extern "C" { namespace coreimage {
 
-// 参数:s=原图, blur=高斯模糊图(同尺寸同坐标系),
-// smoothA/whitenA/ruddyA/brightA/satMul/slimA=强度,
-// face=(cx, cyTop, rx, ry) 显示坐标(y 顶基),faceOn=0/1,
-// jaw=4 级全宽轮廓(无 FaceMesh 时传默认近似)
-float4 hinterBeauty(sampler s, sampler blur,
-                    float smoothA, float whitenA, float ruddyA,
+// 参数:s=原图(唯一输入图像),强度 6 个,
+// face=(cx, cyTop, rx, ry) 左上原点归一化,faceOn=0/1,
+// jaw=4 级全宽轮廓,texel=1/像素尺寸
+float4 hinterBeauty(sampler s, float smoothA, float whitenA, float ruddyA,
                     float brightA, float satMul, float slimA,
-                    float4 face, float faceOn, float4 jaw) {
-    float2 uv = s.coord();                  // 左下原点 0..1
-    float2 disp = float2(uv.x, 1.0 - uv.y); // 左上原点(与 face 参数同基)
-    float faceActive = faceOn;
-    float2 fc = mix(float2(0.5, 0.5), face.xy, faceOn);
-    float2 fr = max(mix(float2(0.3, 0.4), face.zw, faceOn), float2(0.06));
+                    float4 face, float faceOn, float4 jaw, float2 texel) {
+    float2 uv = s.coord();                   // 归一化,左下原点
+    float2 disp = float2(uv.x, 1.0 - uv.y);  // 左上原点(与 face 同基)
+    float2 fc = face.xy;
+    float2 fr = max(face.zw, float2(0.045)); // 无脸时椭圆≈0 → 几乎不处理
 
-    // ---- 瘦脸:沿轮廓法线的绝对位移(与安卓一致)----
-    if (slimA > 0.001 && faceActive > 0.5) {
+    // ---- 瘦脸:沿轮廓法线的绝对位移 ----
+    if (slimA > 0.001 && faceOn > 0.5) {
         float chinY = fc.y - fr.y * 0.85;
         float topY = fc.y + fr.y * 1.05;
         float hh = clamp((disp.y - chinY) / (topY - chinY), 0.0, 1.0);
@@ -62,51 +82,59 @@ float4 hinterBeauty(sampler s, sampler blur,
     }
 
     float4 src = s.sample(uv);
-    float4 blr = blur.sample(uv);
-    float lum = dot(src.rgb, float3(0.299, 0.587, 0.114));
+    float3 sc = src.rgb;
+
+    // ---- 核内双环模糊(替代 CIGaussianBlur,避免第二个输入图像)----
+    float r1 = 2.5 + 6.0 * smoothA;          // 像素半径
+    float3 b1 = ringAvg(s, uv, texel, r1);
+    float3 b2 = ringAvg(s, uv, texel, r1 * 2.3);
+    float3 blr = sc * 0.22 + b1 * 0.52 + b2 * 0.26;
+
+    float lum = dot(sc, float3(0.299, 0.587, 0.114));
 
     // ---- 肤色掩码(YCbCr 窗口,同安卓)----
-    float cb = -0.168736 * src.r - 0.331264 * src.g + 0.5 * src.b;
-    float cr = 0.5 * src.r - 0.418688 * src.g - 0.081312 * src.b;
+    float cb = -0.168736 * sc.r - 0.331264 * sc.g + 0.5 * sc.b;
+    float cr = 0.5 * sc.r - 0.418688 * sc.g - 0.081312 * sc.b;
     float skinCol = smoothstep(-0.20, -0.12, cb) *
                     (1.0 - smoothstep(-0.03, 0.01, cb)) *
                     smoothstep(0.05, 0.11, cr) *
                     (1.0 - smoothstep(0.20, 0.27, cr));
 
-    // ---- 空间掩码:2.5 倍脸半径柔和衰减 + 下巴以下颈部退出 ----
+    // ---- 空间掩码:必须始终生效(脸部定向,绝不全局)----
+    // 2.5 倍脸半径柔和衰减 + 下巴以下颈部退出
     float2 norm = (disp - fc) / (fr * 2.5);
     float dist = length(norm);
     float spatialMask = 1.0 - smoothstep(0.3, 1.2, dist);
-    float chinYn = fc.y - fr.y * 0.75;
-    spatialMask *= smoothstep(chinYn - 0.06, chinYn + 0.02, disp.y);
+    float chinYn = fc.y + fr.y * 0.75;                 // 左上原点:y 增大 = 向下
+    spatialMask *= 1.0 - smoothstep(chinYn - 0.02, chinYn + 0.06, disp.y);
 
-    float skinMask = mix(skinCol, skinCol * spatialMask, faceActive);
+    // 无脸时椭圆收缩,强度随之淡出(不再退化成全屏)
+    float skinMask = skinCol * spatialMask * mix(0.45, 1.0, faceOn);
     float m = skinMask;
     m *= 1.0 - smoothstep(0.80, 0.96, lum); // 高光不处理
     m *= smoothstep(0.05, 0.15, lum);       // 死暗不处理
-    float mFace = skinMask * (1.0 - smoothstep(0.75, 0.95, lum));
 
-    // ---- 磨皮:边缘保留混合,强度曲线收敛(smooth=1 时约 65%)----
-    float3 detail = src.rgb - blr.rgb;
+    // ---- 磨皮:边缘保留混合,强度曲线收敛 ----
+    float3 detail = sc - blr;
     float dy = fabs(dot(detail, float3(0.299, 0.587, 0.114)));
     float edge = smoothstep(0.015, 0.09, dy);
-    float3 smoothed = mix(blr.rgb, src.rgb, edge);
-    float st = clamp((0.12 + 0.53 * smoothA) * m, 0.0, 0.72);
-    float3 c = mix(src.rgb, smoothed, st);
+    float3 smoothed = mix(blr, sc, edge);
+    float st = clamp((0.12 + 0.55 * smoothA) * m, 0.0, 0.75);
+    float3 c = mix(sc, smoothed, st);
     c += detail * (st * 0.20);
 
     // ---- 美白:gamma 提亮中间调,仅作用肤色区 ----
-    float wh = whitenA * mFace;
+    float wh = whitenA * m;
     float midKnee = 1.0 - smoothstep(0.55, 0.90, lum);
     c = pow(max(c, float3(0.001)), float3(1.0 - wh * midKnee * 0.26));
     c += float3(0.014, 0.003, 0.0) * wh * midKnee;
-    c.r += ruddyA * 0.05 * mFace;
+    c.r += ruddyA * 0.05 * m;
 
     // ---- 全局亮度/饱和度 ----
     c += brightA * 0.10;
     float l2 = dot(c, float3(0.299, 0.587, 0.114));
     c = mix(float3(l2), c, satMul);
-    return float4(clamp(c, 0.0, 1.0), 1.0);
+    return float4(clamp(c, 0.0, 1.0), src.a);
 }
 
 }}
