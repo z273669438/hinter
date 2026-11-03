@@ -804,7 +804,8 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
         let srcImg = ci
 
         // 1) 高斯模糊(磨皮基础;通用核支持第二输入图像,质量优于核内采样)
-        let sigma = 2.5 + beauty.smooth * 6.0
+        //    半径收敛:过大(σ>7)会在发丝/眉毛边缘拉出亮圈伪影
+        let sigma = 2.0 + beauty.smooth * 4.5
         blurFilter?.setValue(ci.clampedToExtent(), forKey: kCIInputImageKey)
         blurFilter?.setValue(sigma, forKey: kCIInputRadiusKey)
         let blurred = blurFilter?.outputImage?.cropped(to: extent)
