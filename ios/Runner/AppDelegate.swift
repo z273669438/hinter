@@ -804,8 +804,13 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
         let srcImg = ci
 
         // 1) 高斯模糊(磨皮基础;通用核支持第二输入图像,质量优于核内采样)
-        //    半径收敛:过大(σ>7)会在发丝/眉毛边缘拉出亮圈伪影
-        let sigma = 2.0 + beauty.smooth * 4.5
+        //    半径必须跟**人脸像素宽度**成比例,而不是固定像素:
+        //    手机远拍脸占画面 ~40%,平板自拍脸占 ~76%,固定 σ 时前者看不出来
+        //    后者又过头。face.zw 是检测框的 0.55 倍,除回去得到框宽。
+        let faceWpx = faceEllipse.z > 0.02
+            ? CGFloat(faceEllipse.z) / 0.55 * extent.width
+            : extent.width * 0.25            // 未检测到脸:按中等脸宽估
+        let sigma = min(max(faceWpx * (0.004 + 0.012 * beauty.smooth), 1.5), 16.0)
         blurFilter?.setValue(ci.clampedToExtent(), forKey: kCIInputImageKey)
         blurFilter?.setValue(sigma, forKey: kCIInputRadiusKey)
         let blurred = blurFilter?.outputImage?.cropped(to: extent)
