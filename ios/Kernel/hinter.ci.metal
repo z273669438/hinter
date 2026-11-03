@@ -95,20 +95,23 @@ float4 hinterBeauty(sampler s, sampler blur,
     m *= 1.0 - smoothstep(0.74, 1.00, lum);
     m *= smoothstep(0.04, 0.22, lum);
 
-    // ---- 磨皮:低频混合。边缘保留权重用**宽过渡**,避免纹理区斑块 ----
+    // ---- 磨皮:低频混合。边缘保护阈值放低(0.03~0.12)+细节回加 15% ----
+    // 阈值太高(0.06~0.26)时额头细发丝被抹成雾状"杂色影子",实测对照后收紧
     float3 hp = sc - blr;
     float hpMag = length(hp);
-    float keep = smoothstep(0.06, 0.26, hpMag);    // 大结构(眼镜/发丝)保留
+    float keep = smoothstep(0.03, 0.12, hpMag);    // 发丝/眼镜/睫毛完整保留
     float3 smoothed = mix(blr, sc, keep);
-    float st = clamp((0.20 + 0.62 * smoothA) * m, 0.0, 0.90);
+    float st = clamp((0.20 + 0.62 * smoothA) * m, 0.0, 0.85);
     float3 c = mix(sc, smoothed, st);
-    c += hp * (st * 0.08);                          // 极少量纹理回加,防塑料
+    c += hp * (st * 0.15);                          // 纹理回加,防塑料感
 
-    // ---- 美白:亮度域提亮(保色相,不再逐通道 gamma → 不假白)----
+    // ---- 美白:曝光式增益(乘法),保住色相与唇色 ----
+    // 旧版往白色混合会把肤色冲成灰白("假白"),乘法提亮等价于多给光
     float wh = whitenA * m;
     float knee = 1.0 - smoothstep(0.45, 0.95, lum); // 只提中间调,高光让开
-    c += (1.0 - c) * (wh * knee * 0.12);
-    c += float3(0.006, 0.002, 0.0) * wh * knee;     // 极轻微暖调
+    float gain = min(1.0 + wh * knee * 0.45, 1.35);
+    c *= gain;
+    c += float3(0.008, 0.003, 0.0) * wh * knee;     // 极轻微暖调
     c.r += ruddyA * 0.02 * m;
 
     // ---- 全局亮度/饱和度 ----
