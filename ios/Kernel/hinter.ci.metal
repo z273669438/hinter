@@ -1,9 +1,11 @@
 // hinter.ci.metal — 美颜合成核(移植自安卓 GLSL beautyCombine)
-// 单 pass:瘦脸位移采样 + 核内环形模糊磨皮 + 肤色×椭圆双掩码 + 定向美白红润
+// 单 pass:瘦脸位移采样 + 肤色×椭圆双掩码磨皮 + 定向美白红润
 //
-// 关键约束:CIColorKernel 只接受 **1 个** 输入图像!所以模糊在核内做
-// (两圈 8 点环均值近似高斯),不引入第二个 sampler —— v31 装机实测
-// "BUILD FAILED" 就是多图像签名被拒。
+// 关键约束:本核在**任意坐标**采样(瘦脸位移 + 模糊取样),Core Image 会
+// 把它判定为**通用核 CIKernel**(不是 CIColorKernel)。Swift 端必须用
+// CIKernel(functionName:fromMetalLibraryData:) 加载,否则报
+// "Cannot initialize CIColorKernel because the kernel appears to be a CIKernel"。
+// 通用核支持多个输入图像 → 模糊直接用上游 CIGaussianBlur 的结果(质量好且快)。
 //
 // 编译(必须两步,缺一即空库/链接失败):
 //   xcrun metal -fcikernel -c -target air64-apple-ios15.0.0 hinter.ci.metal -o k.air
@@ -27,32 +29,16 @@ static inline float jawHalf(float4 jaw, float hh) {
     return mix(m, sC, smoothstep(0.50, 0.84, hh));
 }
 
-namespace coreimage {
-
-// 8 点环均值(uv 归一化,左下原点;r 为像素半径)
-static inline float3 ringAvg(sampler s, float2 uv, float2 texel, float r) {
-    float2 o = texel * r;
-    float3 a = s.sample(uv + float2( 0.92388,  0.38268) * o).rgb;
-    a += s.sample(uv + float2( 0.38268,  0.92388) * o).rgb;
-    a += s.sample(uv + float2(-0.38268,  0.92388) * o).rgb;
-    a += s.sample(uv + float2(-0.92388,  0.38268) * o).rgb;
-    a += s.sample(uv + float2(-0.92388, -0.38268) * o).rgb;
-    a += s.sample(uv + float2(-0.38268, -0.92388) * o).rgb;
-    a += s.sample(uv + float2( 0.38268, -0.92388) * o).rgb;
-    a += s.sample(uv + float2( 0.92388, -0.38268) * o).rgb;
-    return a * 0.125;
-}
-
-}
-
 extern "C" { namespace coreimage {
 
-// 参数:s=原图(唯一输入图像),强度 6 个,
+// 参数:s=原图, blur=高斯模糊图(同尺寸同坐标系),
+// smoothA/whitenA/ruddyA/brightA/satMul/slimA=强度,
 // face=(cx, cyTop, rx, ry) 左上原点归一化,faceOn=0/1,
-// jaw=4 级全宽轮廓,texel=1/像素尺寸
-float4 hinterBeauty(sampler s, float smoothA, float whitenA, float ruddyA,
+// jaw=4 级全宽轮廓(无 FaceMesh 时传默认近似)
+float4 hinterBeauty(sampler s, sampler blur,
+                    float smoothA, float whitenA, float ruddyA,
                     float brightA, float satMul, float slimA,
-                    float4 face, float faceOn, float4 jaw, float2 texel) {
+                    float4 face, float faceOn, float4 jaw) {
     float2 uv = s.coord();                   // 归一化,左下原点
     float2 disp = float2(uv.x, 1.0 - uv.y);  // 左上原点(与 face 同基)
     float2 fc = face.xy;
@@ -82,14 +68,9 @@ float4 hinterBeauty(sampler s, float smoothA, float whitenA, float ruddyA,
     }
 
     float4 src = s.sample(uv);
+    float4 blr4 = blur.sample(uv);
     float3 sc = src.rgb;
-
-    // ---- 核内双环模糊(替代 CIGaussianBlur,避免第二个输入图像)----
-    float r1 = 2.5 + 6.0 * smoothA;          // 像素半径
-    float3 b1 = ringAvg(s, uv, texel, r1);
-    float3 b2 = ringAvg(s, uv, texel, r1 * 2.3);
-    float3 blr = sc * 0.22 + b1 * 0.52 + b2 * 0.26;
-
+    float3 blr = blr4.rgb;
     float lum = dot(sc, float3(0.299, 0.587, 0.114));
 
     // ---- 肤色掩码(YCbCr 窗口,同安卓)----

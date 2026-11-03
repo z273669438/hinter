@@ -281,7 +281,9 @@ class HinterCameraPlugin: NSObject, FlutterPlugin {
     private var renderCount: Int64 = 0
 
     /// 美颜合成核(Metal,workflow 编译 default.metallib 注入 app 根目录)
-    private lazy var beautyKernel: CIColorKernel? = {
+    /// 注意:核内做任意坐标采样(瘦脸位移/模糊),CI 判定为**通用核**,
+    /// 必须用 CIKernel 加载;CIColorKernel 会抛 "appears to be a CIKernel"。
+    private lazy var beautyKernel: CIKernel? = {
         guard let url = Bundle.main.url(forResource: "default",
                                         withExtension: "metallib"),
               let data = try? Data(contentsOf: url) else {
@@ -289,8 +291,8 @@ class HinterCameraPlugin: NSObject, FlutterPlugin {
             return nil
         }
         do {
-            let k = try CIColorKernel(functionName: "hinterBeauty",
-                                      fromMetalLibraryData: data)
+            let k = try CIKernel(functionName: "hinterBeauty",
+                                 fromMetalLibraryData: data)
             diag("beautyKernel LOADED")
             return k
         } catch {
@@ -799,18 +801,25 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
 
         var ci = CIImage(cvPixelBuffer: pb)
         let extent = ci.extent
+        let srcImg = ci
 
-        // 美颜:优先 Metal 核(核内模糊,单输入图像;肤色×椭圆掩码,脸部定向,含瘦脸);
-        //    metallib 缺失/加载失败时回退全屏 CI 链(保底可用,强度刻意压低)
-        if let kernel = beautyKernel {
+        // 1) 高斯模糊(磨皮基础;通用核支持第二输入图像,质量优于核内采样)
+        let sigma = 2.5 + beauty.smooth * 6.0
+        blurFilter?.setValue(ci.clampedToExtent(), forKey: kCIInputImageKey)
+        blurFilter?.setValue(sigma, forKey: kCIInputRadiusKey)
+        let blurred = blurFilter?.outputImage?.cropped(to: extent)
+
+        // 2) 美颜:优先 Metal 通用核(肤色×椭圆掩码,脸部定向,含瘦脸);
+        //    metallib 缺失/加载失败时回退全屏 CI 链(强度刻意压低)
+        if let kernel = beautyKernel, let b = blurred {
             let fw = CGFloat(faceEllipse.z * 2)
             let jaw = CIVector(x: fw * 0.46, y: fw * 0.60,
                                z: fw * 0.86, w: fw * 0.98)
             let out = kernel.apply(
                 extent: extent,
-                roiCallback: { _, r in r.insetBy(dx: -96, dy: -96) },
+                roiCallback: { _, r in r.insetBy(dx: -128, dy: -128) },
                 arguments: [
-                    ci,
+                    srcImg, b,
                     NSNumber(value: beauty.smooth),
                     NSNumber(value: beauty.whiten),
                     NSNumber(value: beauty.ruddy),
@@ -823,21 +832,15 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
                              w: CGFloat(faceEllipse.w)),
                     NSNumber(value: faceOn ? 1.0 : 0.0),
                     jaw,
-                    CIVector(x: 1.0 / max(extent.width, 1),
-                             y: 1.0 / max(extent.height, 1)),
                 ])
             if let o = out { ci = o }
         } else {
             // 回退链:全屏高斯磨皮 + 提亮(仅在核不可用时生效)
-            if beauty.smooth > 0.01 {
-                blurFilter?.setValue(ci.clampedToExtent(), forKey: kCIInputImageKey)
-                blurFilter?.setValue(2.5 + beauty.smooth * 5.5, forKey: kCIInputRadiusKey)
-                if let b = blurFilter?.outputImage?.cropped(to: extent) {
-                    ci = ci.applyingFilter("CIDissolveTransition", parameters: [
-                        "inputTargetImage": b,
-                        "inputTime": NSNumber(value: 0.05 + 0.30 * beauty.smooth),
-                    ])
-                }
+            if beauty.smooth > 0.01, let b = blurred {
+                ci = ci.applyingFilter("CIDissolveTransition", parameters: [
+                    "inputTargetImage": b,
+                    "inputTime": NSNumber(value: 0.05 + 0.30 * beauty.smooth),
+                ])
             }
             if beauty.whiten > 0.01 {
                 ci = ci.applyingFilter("CIGammaAdjust", parameters: [
@@ -850,7 +853,10 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
         // 3) 渲染到输出缓冲,交给 Flutter 预览
         renderCount += 1
         if renderCount == 1 || renderCount % 150 == 0 {
-            diag("render #\(renderCount) tex=\(textureId) ciExt=\(ci.extent)")
+            diag("render #\(renderCount) tex=\(textureId) faceOn=\(faceOn ? 1 : 0) "
+                 + "c=(\(String(format: "%.3f", faceEllipse.x)),\(String(format: "%.3f", faceEllipse.y))) "
+                 + "r=(\(String(format: "%.3f", faceEllipse.z)),\(String(format: "%.3f", faceEllipse.w))) "
+                 + "slim=\(String(format: "%.2f", beauty.slim))")
         }
         if let sink = sink, let ctx = ciContext, textureId >= 0,
            let outBuf = makeBuffer() {
