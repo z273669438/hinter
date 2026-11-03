@@ -5,14 +5,15 @@
 // **通用核 CIKernel**(不是 CIColorKernel)。Swift 端必须用
 // CIKernel(functionName:fromMetalLibraryData:) 加载,否则报
 // "Cannot initialize CIColorKernel because the kernel appears to be a CIKernel"。
-// 通用核支持多个输入图像 → 模糊直接用上游 CIGaussianBlur 的结果。
 //
 // 编译(必须两步,缺一即空库/链接失败):
 //   xcrun metal -fcikernel -c -target air64-apple-ios15.0.0 hinter.ci.metal -o k.air
 //   xcrun metallib -cikernel k.air -o default.metallib
 //
-// 坐标系:sampler.coord() 返回归一化坐标,原点左下;face/jaw 是左上原点
-// (Vision 检测后已翻转),核内用 disp = (x, 1-y) 统一到左上原点到 0..1。
+// 坐标系:sampler.coord() 归一化、原点左下;face/jaw 左上原点(Vision 已翻转),
+// 核内用 disp = (x, 1-y) 统一到左上原点到 0..1。
+// 半径口径:face.zw 已经是脸框全宽的 0.55/0.62 倍,即≈脸椭圆真半径,
+// 不能再乘放大系数(乘 1.75 会伸到头发上,磨出"杂色伪影")。
 
 #include <metal_stdlib>
 #include <CoreImage/CoreImage.h>
@@ -32,6 +33,17 @@ static inline float jawHalf(float4 jaw, float hh) {
     return mix(m, sC, smoothstep(0.50, 0.84, hh));
 }
 
+// 肤色掩码(YCbCr 窗口)。过渡带刻意放宽:逐像素窄阈值会把视频噪点
+// 放大成"彩色斑块",放宽后掩码连续,杂色消失
+static inline float skinMaskOf(float3 c) {
+    float cb = -0.168736 * c.r - 0.331264 * c.g + 0.5 * c.b;
+    float cr = 0.5 * c.r - 0.418688 * c.g - 0.081312 * c.b;
+    return smoothstep(-0.26, -0.06, cb) *
+           (1.0 - smoothstep(-0.02, 0.06, cb)) *
+           smoothstep(0.00, 0.14, cr) *
+           (1.0 - smoothstep(0.16, 0.34, cr));
+}
+
 extern "C" { namespace coreimage {
 
 float4 hinterBeauty(sampler s, sampler blur,
@@ -43,29 +55,34 @@ float4 hinterBeauty(sampler s, sampler blur,
     float2 fc = face.xy;
     float2 fr = max(face.zw, float2(0.045)); // 无脸时椭圆≈0 → 几乎不处理
 
-    // ---- 瘦脸:下颌段沿轮廓法线向内收 ----
+    float3 sc0 = s.sample(uv).rgb;           // 位移前的源色(给瘦脸的肤色门控)
+    float skinHere = skinMaskOf(sc0);
+
+    // ---- 瘦脸:只推皮肤,不碰头发/背景 ----
     // hh:0=下巴(下方, y 大) → 1=额角(上方, y 小)
-    if (slimA > 0.001 && faceOn > 0.5) {
+    if (slimA > 0.001 && faceOn > 0.5 && skinHere > 0.05) {
         float chinY = fc.y + fr.y * 0.80;
         float topY = fc.y - fr.y * 1.00;
         float hh = clamp((disp.y - chinY) / (topY - chinY), 0.0, 1.0);
-        float hw = max(jawHalf(jaw, hh), 0.04);   // 该高度半宽(归一化)
+        float hw = max(jawHalf(jaw, hh), 0.04);
         float dx = disp.x - fc.x;
-        float rr = length((disp - fc) / fr);      // 椭圆归一距离
-        // 纵向只在下颌段生效;hh>0.5(眼/太阳穴以上)完全不碰
-        float vBand = smoothstep(0.00, 0.14, hh) *
-                      (1.0 - smoothstep(0.28, 0.50, hh));
-        // 横向沿脸缘窄带,带内向外取样 → 脸被压窄(fade 到 1.18 略过脸缘)
-        float band = smoothstep(0.45, 0.92, rr) * (1.0 - smoothstep(1.00, 1.18, rr));
+        float rr = length((disp - fc) / fr);
+        // 纵向只在下颌段;hh>0.5(眼/太阳穴以上)完全不碰
+        float vBand = smoothstep(0.02, 0.16, hh) *
+                      (1.0 - smoothstep(0.30, 0.50, hh));
+        // 横向沿脸缘窄带(到脸椭圆边缘即止,不外拖)
+        float band = smoothstep(0.45, 0.90, rr) * (1.0 - smoothstep(0.98, 1.12, rr));
         float lat = smoothstep(0.15, 0.75, fabs(dx) / max(fr.x, 0.05));
         float sh = slimA * hw * 0.11 * band * vBand * lat;
-        // 沿轮廓切线方向跟随(位移主要横向,纵向只做轻微跟随)
+        // 肤色门控:头发/墙一律不动(0.15 起坡,0.75 满强度)
+        sh *= smoothstep(0.15, 0.75, skinHere);
         float slope = (jawHalf(jaw, min(hh + 0.10, 1.0)) -
                        jawHalf(jaw, max(hh - 0.10, 0.0))) / 0.20;
         float inv = rsqrt(1.0 + slope * slope);
         disp.x += (dx < 0.0 ? -sh : sh) * inv;
         disp.y += fabs(sh) * slope * inv * 0.6;
-        uv = float2(disp.x, 1.0 - disp.y);
+        // 采样必须夹在画面内,否则边缘被拉伸成拖影
+        uv = clamp(float2(disp.x, 1.0 - disp.y), 0.002, 0.998);
     }
 
     float4 src = s.sample(uv);
@@ -73,43 +90,33 @@ float4 hinterBeauty(sampler s, sampler blur,
     float3 blr = blur.sample(uv).rgb;
     float lum = dot(sc, float3(0.299, 0.587, 0.114));
 
-    // ---- 肤色掩码(YCbCr 窗口;边界给足过渡,避免硬线)----
-    float cb = -0.168736 * sc.r - 0.331264 * sc.g + 0.5 * sc.b;
-    float cr = 0.5 * sc.r - 0.418688 * sc.g - 0.081312 * sc.b;
-    float skinCol = smoothstep(-0.22, -0.09, cb) *
-                    (1.0 - smoothstep(-0.05, 0.03, cb)) *
-                    smoothstep(0.02, 0.10, cr) *
-                    (1.0 - smoothstep(0.17, 0.32, cr));
+    float skinCol = skinMaskOf(sc);
 
-    // ---- 空间掩码:恒脸部定向,范围=人脸框本身 ----
-    // face.zw 是脸框的 0.55/0.62 倍(检测时缩过),×1.75 还原到框尺寸:
-    // 框内满强度,框缘淡出到 0 —— 头发/墙/衣服不进掩码。
-    // 自拍特写下 Vision 脸框可达画面宽 76%,旧版用 2.6 倍半径直接糊满整屏
-    float2 mr = fr * 1.75;
-    float spatialMask = 1.0 - smoothstep(0.72, 1.10, length((disp - fc) / mr));
-    float chinLine = fc.y + fr.y * 0.95;                  // 左上原点:y 大 = 下
+    // ---- 空间掩码:椭圆半径就用 face.zw(不再放大),框缘淡出 ----
+    float2 mr = fr * 1.02;
+    float spatialMask = 1.0 - smoothstep(0.82, 1.10, length((disp - fc) / mr));
+    float chinLine = fc.y + fr.y * 0.95;               // 左上原点:y 大 = 下
     spatialMask *= 1.0 - smoothstep(chinLine - 0.04, chinLine + 0.10, disp.y);
 
     float m = skinCol * spatialMask * mix(0.45, 1.0, faceOn);
-    // 高光/死暗保护:窗口拉宽,避免亮度临界处切出轮廓
-    m *= 1.0 - smoothstep(0.74, 1.00, lum);
-    m *= smoothstep(0.04, 0.22, lum);
+    // 高光保护:只在接近纯白的高光才让开(旧版 0.74 起坡,室内暖光下
+    // 脸亮度≈0.8,掩码被自己削掉一半 → "磨皮没效果")
+    m *= 1.0 - smoothstep(0.88, 1.00, lum);
+    m *= smoothstep(0.04, 0.20, lum);
 
-    // ---- 磨皮:低频混合。边缘保护阈值放低(0.03~0.12)+细节回加 15% ----
-    // 阈值太高(0.06~0.26)时额头细发丝被抹成雾状"杂色影子",实测对照后收紧
+    // ---- 磨皮:低频混合,边缘保护 + 细节回加 ----
     float3 hp = sc - blr;
     float hpMag = length(hp);
     float keep = smoothstep(0.03, 0.12, hpMag);    // 发丝/眼镜/睫毛完整保留
     float3 smoothed = mix(blr, sc, keep);
-    float st = clamp((0.20 + 0.62 * smoothA) * m, 0.0, 0.85);
+    float st = clamp((0.20 + 0.62 * smoothA) * m, 0.0, 0.90);
     float3 c = mix(sc, smoothed, st);
     c += hp * (st * 0.15);                          // 纹理回加,防塑料感
 
     // ---- 美白:曝光式增益(乘法),保住色相与唇色 ----
-    // 旧版往白色混合会把肤色冲成灰白("假白"),乘法提亮等价于多给光
     float wh = whitenA * m;
     float knee = 1.0 - smoothstep(0.45, 0.95, lum); // 只提中间调,高光让开
-    float gain = min(1.0 + wh * knee * 0.45, 1.35);
+    float gain = min(1.0 + wh * knee * 0.52, 1.42);
     c *= gain;
     c += float3(0.008, 0.003, 0.0) * wh * knee;     // 极轻微暖调
     c.r += ruddyA * 0.02 * m;

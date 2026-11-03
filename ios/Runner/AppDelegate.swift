@@ -784,7 +784,21 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
             let cy = Float(1.0 - bb.midY)
             let rx = Float(bb.width) * 0.55
             let ry = Float(bb.height) * 0.62
-            let k: Float = 0.35
+            // 合理性校验:误检(下巴/反光/肩部)会把瘦脸位移推到头发和画面边缘,
+            // 只有框落在画面中部且长宽比正常才采纳,否则按"未检出"淡出
+            let ratio = ry / max(rx, 0.001)
+            let sane = cx > 0.12 && cx < 0.88 && cy > 0.08 && cy < 0.88
+                && rx > 0.06 && rx < 0.48 && ry > 0.05 && ry < 0.42
+                && ratio > 0.45 && ratio < 0.95
+            guard sane else {
+                self.faceEllipse.z *= 0.7
+                self.faceEllipse.w *= 0.7
+                self.faceOn = self.faceEllipse.z > 0.02
+                return
+            }
+            // 位置突变(误检跳变)时用更慢的 EMA,避免美颜区域瞬移
+            let jump = abs(cx - self.faceEllipse.x) + abs(cy - self.faceEllipse.y)
+            let k: Float = jump > 0.28 ? 0.12 : 0.35
             self.faceEllipse.x += (cx - self.faceEllipse.x) * k
             self.faceEllipse.y += (cy - self.faceEllipse.y) * k
             self.faceEllipse.z += (rx - self.faceEllipse.z) * k
@@ -870,6 +884,10 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
             ctx.render(ci, to: outBuf)
             if renderCount == 70 {
                 ciWrite(ci, ctx: ctx, name: "frame70.png")
+            }
+            // 900 帧≈15s:此时用户通常已在调滑块,留一张带美颜参数的实拍帧做对照
+            if renderCount == 900 {
+                ciWrite(ci, ctx: ctx, name: "frame900.png")
             }
             sink.present(outBuf)
             let tid = textureId
