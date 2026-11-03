@@ -49,7 +49,7 @@ extern "C" { namespace coreimage {
 float4 hinterBeauty(sampler s, sampler blur,
                     float smoothA, float whitenA, float ruddyA,
                     float brightA, float satMul, float slimA,
-                    float4 face, float faceOn, float4 jaw) {
+                    float4 face, float faceOn, float4 jaw, float2 texel) {
     float2 uv = s.coord();                   // 归一化,左下原点
     float2 disp = float2(uv.x, 1.0 - uv.y);  // 左上原点(与 face 同基)
     float2 fc = face.xy;
@@ -99,19 +99,26 @@ float4 hinterBeauty(sampler s, sampler blur,
     spatialMask *= 1.0 - smoothstep(chinLine - 0.04, chinLine + 0.10, disp.y);
 
     float m = skinCol * spatialMask * mix(0.45, 1.0, faceOn);
-    // 高光保护:只在接近纯白的高光才让开(旧版 0.74 起坡,室内暖光下
-    // 脸亮度≈0.8,掩码被自己削掉一半 → "磨皮没效果")
-    m *= 1.0 - smoothstep(0.88, 1.00, lum);
-    m *= smoothstep(0.04, 0.20, lum);
+    // 曝光门控几乎不参与中调:近距离自动曝光会把脸推亮,旧门槛(0.74/0.88)
+    // 会让"走近一点效果就变弱",这里只在接近纯白/极暗时让开
+    m *= 1.0 - smoothstep(0.94, 1.00, lum);
+    m *= smoothstep(0.02, 0.10, lum);
 
-    // ---- 磨皮:低频混合,边缘保护 + 细节回加 ----
-    float3 hp = sc - blr;
-    float hpMag = length(hp);
-    float keep = smoothstep(0.03, 0.12, hpMag);    // 发丝/眼镜/睫毛完整保留
+    // ---- 磨皮:低频混合 ----
+    // 边缘保护必须用**1~2 像素尺度的局部梯度**,不能用 |原图-模糊图|:
+    // 模糊半径越大该差值越大,大半径下整张脸都被判成"边缘"→磨皮自动取消,
+    // 这正是"近距离(大半径)磨不掉、远距离能磨一点"的原因
+    float2 tx = texel * 1.5;
+    float3 gx = s.sample(uv + float2(tx.x, 0.0)).rgb
+              - s.sample(uv - float2(tx.x, 0.0)).rgb;
+    float3 gy = s.sample(uv + float2(0.0, tx.y)).rgb
+              - s.sample(uv - float2(0.0, tx.y)).rgb;
+    float grad = length(gx) + length(gy);
+    float keep = smoothstep(0.05, 0.20, grad);     // 发丝/眼镜/睫毛保留,皮肤孔洞不保留
     float3 smoothed = mix(blr, sc, keep);
     float st = clamp((0.20 + 0.62 * smoothA) * m, 0.0, 0.90);
     float3 c = mix(sc, smoothed, st);
-    c += hp * (st * 0.15);                          // 纹理回加,防塑料感
+    c += (sc - blr) * (st * 0.15);                  // 纹理回加,防塑料感
 
     // ---- 美白:曝光式增益(乘法),保住色相与唇色 ----
     float wh = whitenA * m;

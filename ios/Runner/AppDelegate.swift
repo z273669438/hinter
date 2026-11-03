@@ -276,6 +276,8 @@ class HinterCameraPlugin: NSObject, FlutterPlugin {
     private let faceQueue = DispatchQueue(label: "hinter.face")
     private var faceEllipse = SIMD4<Float>(0.5, 0.5, 0, 0) // cx, cy, rx, ry
     private var faceOn = false
+    /// 最近一次成功检出人脸的媒体时间(用于漏检保持)
+    private var lastFaceOkAt: CFTimeInterval = 0
     private var lastFaceDetect: CFTimeInterval = 0
     private var faceBusy = false
     private var renderCount: Int64 = 0
@@ -768,10 +770,7 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
                 return
             }
             guard let faces = req.results, !faces.isEmpty else {
-                // 无脸:椭圆收缩淡出
-                self.faceEllipse.z *= 0.6
-                self.faceEllipse.w *= 0.6
-                self.faceOn = self.faceEllipse.z > 0.02
+                self.onFaceMiss()
                 return
             }
             // 取最大人脸;Vision 坐标原点在左下 → 转成左上显示坐标
@@ -784,16 +783,13 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
             let cy = Float(1.0 - bb.midY)
             let rx = Float(bb.width) * 0.55
             let ry = Float(bb.height) * 0.62
-            // 合理性校验:误检(下巴/反光/肩部)会把瘦脸位移推到头发和画面边缘,
-            // 只有框落在画面中部且长宽比正常才采纳,否则按"未检出"淡出
+            // 合理性校验:误检(下巴/反光/肩部)会把瘦脸位移推到头发和画面边缘
             let ratio = ry / max(rx, 0.001)
-            let sane = cx > 0.12 && cx < 0.88 && cy > 0.08 && cy < 0.88
-                && rx > 0.06 && rx < 0.48 && ry > 0.05 && ry < 0.42
-                && ratio > 0.45 && ratio < 0.95
+            let sane = cx > 0.08 && cx < 0.92 && cy > 0.05 && cy < 0.92
+                && rx > 0.05 && rx < 0.56 && ry > 0.04 && ry < 0.50
+                && ratio > 0.38 && ratio < 1.05
             guard sane else {
-                self.faceEllipse.z *= 0.7
-                self.faceEllipse.w *= 0.7
-                self.faceOn = self.faceEllipse.z > 0.02
+                self.onFaceMiss()
                 return
             }
             // 位置突变(误检跳变)时用更慢的 EMA,避免美颜区域瞬移
@@ -804,7 +800,18 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
             self.faceEllipse.z += (rx - self.faceEllipse.z) * k
             self.faceEllipse.w += (ry - self.faceEllipse.w) * k
             self.faceOn = true
+            self.lastFaceOkAt = CACurrentMediaTime()
         }
+    }
+
+    /// 漏检处理:近拍时 Vision 常间歇性丢脸,立刻收缩会让美颜区闪烁/跑偏。
+    /// 1.2s 内保持上次椭圆不动,之后才开始收缩淡出。
+    private func onFaceMiss() {
+        let age = CACurrentMediaTime() - lastFaceOkAt
+        if age < 1.2 { return }
+        faceEllipse.z *= 0.7
+        faceEllipse.w *= 0.7
+        faceOn = faceEllipse.z > 0.02
     }
 
     private func handleVideo(_ sampleBuffer: CMSampleBuffer) {
@@ -852,6 +859,8 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
                              w: CGFloat(faceEllipse.w)),
                     NSNumber(value: faceOn ? 1.0 : 0.0),
                     jaw,
+                    CIVector(x: 1.0 / max(extent.width, 1),
+                             y: 1.0 / max(extent.height, 1)),
                 ])
             if let o = out { ci = o }
         } else {
@@ -874,6 +883,7 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
         renderCount += 1
         if renderCount == 1 || renderCount % 150 == 0 {
             diag("render #\(renderCount) tex=\(textureId) faceOn=\(faceOn ? 1 : 0) "
+                 + "age=\(Int((CACurrentMediaTime() - lastFaceOkAt) * 1000))ms "
                  + "c=(\(String(format: "%.3f", faceEllipse.x)),\(String(format: "%.3f", faceEllipse.y))) "
                  + "r=(\(String(format: "%.3f", faceEllipse.z)),\(String(format: "%.3f", faceEllipse.w))) "
                  + "sl=\(String(format: "%.2f", beauty.smooth))/\(String(format: "%.2f", beauty.whiten))"
