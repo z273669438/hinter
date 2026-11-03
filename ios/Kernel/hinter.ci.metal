@@ -55,10 +55,10 @@ float4 hinterBeauty(sampler s, sampler blur,
         // 纵向只在下颌段生效;hh>0.5(眼/太阳穴以上)完全不碰
         float vBand = smoothstep(0.00, 0.14, hh) *
                       (1.0 - smoothstep(0.28, 0.50, hh));
-        // 横向沿脸缘窄带,带内向外取样 → 脸被压窄
-        float band = smoothstep(0.40, 0.88, rr) * (1.0 - smoothstep(1.02, 1.32, rr));
+        // 横向沿脸缘窄带,带内向外取样 → 脸被压窄(fade 到 1.18 略过脸缘)
+        float band = smoothstep(0.45, 0.92, rr) * (1.0 - smoothstep(1.00, 1.18, rr));
         float lat = smoothstep(0.15, 0.75, fabs(dx) / max(fr.x, 0.05));
-        float sh = slimA * hw * 0.20 * band * vBand * lat;
+        float sh = slimA * hw * 0.11 * band * vBand * lat;
         // 沿轮廓切线方向跟随(位移主要横向,纵向只做轻微跟随)
         float slope = (jawHalf(jaw, min(hh + 0.10, 1.0)) -
                        jawHalf(jaw, max(hh - 0.10, 0.0))) / 0.20;
@@ -81,9 +81,12 @@ float4 hinterBeauty(sampler s, sampler blur,
                     smoothstep(0.02, 0.10, cr) *
                     (1.0 - smoothstep(0.17, 0.32, cr));
 
-    // ---- 空间掩码:恒脸部定向(2.6 倍脸半径柔和衰减 + 颈部退出)----
-    float2 norm = (disp - fc) / (fr * 2.6);
-    float spatialMask = 1.0 - smoothstep(0.35, 1.25, length(norm));
+    // ---- 空间掩码:恒脸部定向,范围=人脸框本身 ----
+    // face.zw 是脸框的 0.55/0.62 倍(检测时缩过),×1.75 还原到框尺寸:
+    // 框内满强度,框缘淡出到 0 —— 头发/墙/衣服不进掩码。
+    // 自拍特写下 Vision 脸框可达画面宽 76%,旧版用 2.6 倍半径直接糊满整屏
+    float2 mr = fr * 1.75;
+    float spatialMask = 1.0 - smoothstep(0.72, 1.10, length((disp - fc) / mr));
     float chinLine = fc.y + fr.y * 0.95;                  // 左上原点:y 大 = 下
     spatialMask *= 1.0 - smoothstep(chinLine - 0.04, chinLine + 0.10, disp.y);
 
@@ -95,21 +98,18 @@ float4 hinterBeauty(sampler s, sampler blur,
     // ---- 磨皮:低频混合。边缘保留权重用**宽过渡**,避免纹理区斑块 ----
     float3 hp = sc - blr;
     float hpMag = length(hp);
-    float keep = smoothstep(0.035, 0.20, hpMag);   // 大结构完全保留
+    float keep = smoothstep(0.06, 0.26, hpMag);    // 大结构(眼镜/发丝)保留
     float3 smoothed = mix(blr, sc, keep);
-    float st = clamp((0.14 + 0.66 * smoothA) * m, 0.0, 0.88);
+    float st = clamp((0.20 + 0.62 * smoothA) * m, 0.0, 0.90);
     float3 c = mix(sc, smoothed, st);
     c += hp * (st * 0.08);                          // 极少量纹理回加,防塑料
 
     // ---- 美白:亮度域提亮(保色相,不再逐通道 gamma → 不假白)----
     float wh = whitenA * m;
-    float knee = 1.0 - smoothstep(0.60, 0.98, lum); // 宽膝高光保护
-    c += (1.0 - c) * (wh * knee * 0.24);
-    c += float3(0.012, 0.004, 0.0) * wh * knee;     // 微暖
-    c.r += ruddyA * 0.04 * m;
-    // 美白后略补饱和,抵消提亮带来的"发白"
-    float l2 = dot(c, float3(0.299, 0.587, 0.114));
-    c = mix(float3(l2), c, 1.0 + wh * knee * 0.14);
+    float knee = 1.0 - smoothstep(0.45, 0.95, lum); // 只提中间调,高光让开
+    c += (1.0 - c) * (wh * knee * 0.12);
+    c += float3(0.006, 0.002, 0.0) * wh * knee;     // 极轻微暖调
+    c.r += ruddyA * 0.02 * m;
 
     // ---- 全局亮度/饱和度 ----
     c += brightA * 0.10;

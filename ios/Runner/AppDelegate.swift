@@ -857,7 +857,8 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
             diag("render #\(renderCount) tex=\(textureId) faceOn=\(faceOn ? 1 : 0) "
                  + "c=(\(String(format: "%.3f", faceEllipse.x)),\(String(format: "%.3f", faceEllipse.y))) "
                  + "r=(\(String(format: "%.3f", faceEllipse.z)),\(String(format: "%.3f", faceEllipse.w))) "
-                 + "slim=\(String(format: "%.2f", beauty.slim))")
+                 + "sl=\(String(format: "%.2f", beauty.smooth))/\(String(format: "%.2f", beauty.whiten))"
+                 + "/\(String(format: "%.2f", beauty.slim))")
         }
         if let sink = sink, let ctx = ciContext, textureId >= 0,
            let outBuf = makeBuffer() {
