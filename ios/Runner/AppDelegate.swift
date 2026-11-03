@@ -792,9 +792,12 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
                 self.onFaceMiss()
                 return
             }
-            // 位置突变(误检跳变)时用更慢的 EMA,避免美颜区域瞬移
+            // 位置/尺寸突变都要阻尼:Vision 偶发把框检成一半大小(rx 0.37→0.17),
+            // 单帧采纳会让美颜区突然缩到脸中间,观感就是"不跟脸"
             let jump = abs(cx - self.faceEllipse.x) + abs(cy - self.faceEllipse.y)
-            let k: Float = jump > 0.28 ? 0.12 : 0.35
+            let sizeRatio = rx / max(self.faceEllipse.z, 0.001)
+            let sizeWild = sizeRatio < 0.72 || sizeRatio > 1.40
+            let k: Float = sizeWild ? 0.06 : (jump > 0.28 ? 0.12 : 0.35)
             self.faceEllipse.x += (cx - self.faceEllipse.x) * k
             self.faceEllipse.y += (cy - self.faceEllipse.y) * k
             self.faceEllipse.z += (rx - self.faceEllipse.z) * k
