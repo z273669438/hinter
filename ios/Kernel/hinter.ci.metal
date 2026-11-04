@@ -79,12 +79,14 @@ float4 hinterBeauty(sampler s, float smoothA, float whitenA, float ruddyA,
         float hh = clamp((disp.y - chinY) / (topY - chinY), 0.0, 1.0);
         float hw = max(jawHalf(jaw, hh), 0.04);
         float dx = disp.x - fc.x;
-        float rr = length((disp - fc) / fr);
+        // 与掩码同一套超椭圆度量,贴着脸缘收
+        float2 qs = fabs((disp - fc) / fr);
+        float rr = pow(max(qs.x * qs.x * qs.x + qs.y * qs.y * qs.y, 0.0), 1.0 / 3.0);
         float vBand = smoothstep(0.02, 0.16, hh) *
-                      (1.0 - smoothstep(0.30, 0.50, hh));
-        float band = smoothstep(0.45, 0.90, rr) * (1.0 - smoothstep(0.98, 1.12, rr));
+                      (1.0 - smoothstep(0.34, 0.55, hh));
+        float band = smoothstep(0.50, 0.92, rr) * (1.0 - smoothstep(1.02, 1.20, rr));
         float lat = smoothstep(0.15, 0.75, fabs(dx) / max(fr.x, 0.05));
-        float sh = slimA * hw * 0.11 * band * vBand * lat;
+        float sh = slimA * hw * 0.16 * band * vBand * lat;
         sh *= smoothstep(0.15, 0.75, skinHere);   // 非皮肤零位移
         float slope = (jawHalf(jaw, min(hh + 0.10, 1.0)) -
                        jawHalf(jaw, max(hh - 0.10, 0.0))) / 0.20;
@@ -99,10 +101,15 @@ float4 hinterBeauty(sampler s, float smoothA, float whitenA, float ruddyA,
     float lum = dot(sc, float3(0.299, 0.587, 0.114));
     float skinCol = skinMaskOf(sc);
 
-    // ---- 空间掩码:椭圆半径 = face.zw(脸框全宽的 0.55/0.62 倍)----
-    float spatialMask = 1.0 - smoothstep(0.82, 1.10, length((disp - fc) / fr));
-    float chinLine = fc.y + fr.y * 0.95;
-    spatialMask *= 1.0 - smoothstep(chinLine - 0.04, chinLine + 0.10, disp.y);
+    // ---- 空间掩码:超椭圆(n=3),而不是正椭圆 ----
+    // 正椭圆下脸颊/下颌落在椭圆外,权重只剩 0.5~0.6,观感是"只有上半张脸有效"
+    float2 q = fabs((disp - fc) / (fr * 1.22));
+    float q3 = q.x * q.x * q.x + q.y * q.y * q.y;
+    float dMask = pow(max(q3, 0.0), 1.0 / 3.0);
+    float spatialMask = 1.0 - smoothstep(0.92, 1.22, dMask);
+    // 下巴线≈脸框下沿(fr.y = 0.62×框高,故 0.82 即框底),再往下排除颈部
+    float chinLine = fc.y + fr.y * 0.88;
+    spatialMask *= 1.0 - smoothstep(chinLine - 0.02, chinLine + 0.08, disp.y);
 
     float m = skinCol * spatialMask * mix(0.45, 1.0, faceOn);
     m *= 1.0 - smoothstep(0.94, 1.00, lum);   // 只让开接近纯白的高光

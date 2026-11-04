@@ -815,10 +815,15 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
     /// 1.2s 内保持上次椭圆不动,之后才开始收缩淡出。
     private func onFaceMiss() {
         let age = CACurrentMediaTime() - lastFaceOkAt
-        if age < 1.2 { return }
-        faceEllipse.z *= 0.7
-        faceEllipse.w *= 0.7
-        faceOn = faceEllipse.z > 0.02
+        if age < 1.2 { return }          // 短暂漏检:原位置保持,不闪
+        if age < 6.0 {                    // 中期:用上次位置,不再缩小
+            faceOn = faceEllipse.z > 0.085
+            return
+        }
+        // 长时间检不到脸(日志里出现过 24~50s):退化为自拍机位居中默认椭圆,
+        // 否则整个美颜会静默失效,用户感受就是"怎么拉都没反应"
+        faceEllipse = SIMD4<Float>(0.50, 0.54, 0.30, 0.20)
+        faceOn = true
     }
 
     private func handleVideo(_ sampleBuffer: CMSampleBuffer) {
