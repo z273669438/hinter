@@ -62,14 +62,47 @@ jobs:
           zip -qr hinter-ios-unsigned.ipa Payload
           unzip -l hinter-ios-unsigned.ipa | grep -q metallib && echo "VERIFIED_IN_ZIP" >> /tmp/metalstatus || echo "NOT_IN_ZIP" >> /tmp/metalstatus
 
+      # 自己用 REST API 发版:softprops/action-gh-release 会偶发
+      # "fetching GitHub release for tag refs/heads/main: HttpError" 而静默失败
       - name: Publish as GitHub Release
         if: steps.build.outcome == 'success'
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ios-test-1
-          name: Hinter iOS 测试版 1
-          body: 未签名 ipa,Sideloadly 签名安装
-          files: hinter-ios-unsigned.ipa
+        env:
+          GHT: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 - <<'PYX'
+          import json, os, urllib.request
+          repo = os.environ["GITHUB_REPOSITORY"]
+          tok = os.environ["GHT"]
+          api = "https://api.github.com/repos/" + repo
+          hdr = {"Authorization": "Bearer " + tok,
+                 "Accept": "application/vnd.github+json"}
+
+          def req(url, data=None, method=None, headers=None):
+              h = dict(hdr)
+              if headers: h.update(headers)
+              r = urllib.request.Request(url, data=data, headers=h,
+                                         method=method or ("POST" if data else "GET"))
+              return urllib.request.urlopen(r)
+
+          tag = "ios-test-1"
+          try:
+              rel = json.load(req(api + "/releases/tags/" + tag))
+          except Exception:
+              rel = json.load(req(api + "/releases", json.dumps({
+                  "tag_name": tag, "name": "Hinter iOS 测试版 1",
+                  "body": "未签名 ipa,Sideloadly 签名安装"}).encode()))
+
+          for a in rel.get("assets", []):
+              if a["name"] == "hinter-ios-unsigned.ipa":
+                  req(api + "/releases/assets/" + str(a["id"]), method="DELETE")
+
+          data = open("hinter-ios-unsigned.ipa", "rb").read()
+          up = ("https://uploads.github.com/repos/" + repo +
+                "/releases/" + str(rel["id"]) +
+                "/assets?name=hinter-ios-unsigned.ipa")
+          r = req(up, data, headers={"Content-Type": "application/octet-stream"})
+          print("uploaded:", json.load(r)["size"], "bytes")
+          PYX
 
       - name: Report status as issue
         if: always()
