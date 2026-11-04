@@ -278,6 +278,7 @@ class HinterCameraPlugin: NSObject, FlutterPlugin {
     private var faceOn = false
     /// 最近一次成功检出人脸的媒体时间(用于漏检保持)
     private var lastFaceOkAt: CFTimeInterval = 0
+    private var lastDetLog: CFTimeInterval = 0
     private var lastFaceDetect: CFTimeInterval = 0
     private var faceBusy = false
     private var renderCount: Int64 = 0
@@ -767,7 +768,21 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
             do {
                 try handler.perform([req])
             } catch {
+                self.diag("det THROW \(error.localizedDescription)")
                 return
+            }
+            let tNow = CACurrentMediaTime()
+            if tNow - self.lastDetLog > 1.0 {
+                self.lastDetLog = tNow
+                if let fs = req.results, let f = fs.max(by: {
+                    $0.boundingBox.width * $0.boundingBox.height <
+                        $1.boundingBox.width * $1.boundingBox.height }) {
+                    let b = f.boundingBox
+                    self.diag(String(format: "det n=%d bb=(%.3f,%.3f,%.3f,%.3f)",
+                                     fs.count, b.minX, b.minY, b.width, b.height))
+                } else {
+                    self.diag("det NONE")
+                }
             }
             guard let faces = req.results, !faces.isEmpty else {
                 self.onFaceMiss()
@@ -816,14 +831,15 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
     private func onFaceMiss() {
         let age = CACurrentMediaTime() - lastFaceOkAt
         if age < 1.2 { return }          // 短暂漏检:原位置保持,不闪
-        if age < 6.0 {                    // 中期:用上次位置,不再缩小
+        if age < 3.0 {                    // 中期:沿用上次位置
             faceOn = faceEllipse.z > 0.085
             return
         }
-        // 长时间检不到脸(日志里出现过 24~50s):退化为自拍机位居中默认椭圆,
-        // 否则整个美颜会静默失效,用户感受就是"怎么拉都没反应"
-        faceEllipse = SIMD4<Float>(0.50, 0.54, 0.30, 0.20)
-        faceOn = true
+        // 长时间检不到脸(日志里出现过 20~40s):**淡出**美颜。
+        // 曾试过套用居中默认椭圆,结果是把挤压/磨皮落到与脸无关的位置,
+        // 用户感受是"位置乱跑、不跟脸"。宁可暂时不处理,也不能压错地方。
+        faceEllipse = SIMD4<Float>(0.5, 0.54, 0.06, 0.04)
+        faceOn = false
     }
 
     private func handleVideo(_ sampleBuffer: CMSampleBuffer) {
@@ -856,7 +872,7 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
                     NSNumber(value: beauty.ruddy),
                     NSNumber(value: beauty.brightness),
                     NSNumber(value: 0.78 + beauty.saturation * 0.5),
-                    NSNumber(value: beauty.slim),
+                    NSNumber(value: faceOn ? beauty.slim : 0.0),
                     CIVector(x: CGFloat(faceEllipse.x),
                              y: CGFloat(faceEllipse.y),
                              z: CGFloat(faceEllipse.z),
