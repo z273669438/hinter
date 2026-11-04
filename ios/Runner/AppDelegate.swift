@@ -280,7 +280,7 @@ class HinterCameraPlugin: NSObject, FlutterPlugin {
     private var lastFaceOkAt: CFTimeInterval = 0
     private var faceTick: Int = 0
     /// 上一帧检出的人脸椭圆 + 速度,用于按检测延迟做位置外推
-    private var prevEllipse = SIMD4<Float>(0.5, 0.5, 0, 0)
+    private var lastMeasured = SIMD4<Float>(0.5, 0.5, 0, 0)
     private var faceVel = SIMD4<Float>(0, 0, 0, 0)
     private var slimCapture = 0
     private var jawHist: [SIMD4<Float>] = []
@@ -903,28 +903,37 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
             // 椭圆已经塌陷(被误检拖小)时直接吸附恢复,否则美颜掩码等于关闭,
             // 表现就是"滑块怎么拉都没反应"
             let collapsed = self.faceEllipse.z < 0.085
+            // 快速转头本身就是"大跳变",旧逻辑在此时反而把跟随压到 0.12,
+            // 等于最需要跟上时故意变慢 → 只要跳变不荒谬就快速跟随
             let k: Float = collapsed ? 1.0
-                : (sizeWild ? 0.06 : (jump > 0.28 ? 0.12 : 0.35))
+                : (sizeWild ? 0.15 : (jump > 0.45 ? 0.25 : 0.55))
             self.faceEllipse.x += (cx - self.faceEllipse.x) * k
             self.faceEllipse.y += (cy - self.faceEllipse.y) * k
             self.faceEllipse.z += (rx - self.faceEllipse.z) * k
             self.faceEllipse.w += (ry - self.faceEllipse.w) * k
             self.faceOn = true
             let tNow2 = CACurrentMediaTime()
-            let dt2 = Float(max(tNow2 - self.lastFaceOkAt, 0.001))
-            if self.lastFaceOkAt > 0, dt2 < 0.5 {
-                let vx = (self.faceEllipse.x - self.prevEllipse.x) / dt2
-                let vy = (self.faceEllipse.y - self.prevEllipse.y) / dt2
-                let vz = (self.faceEllipse.z - self.prevEllipse.z) / dt2
-                let vw = (self.faceEllipse.w - self.prevEllipse.w) / dt2
-                // 限速,避免误检把速度拉爆
-                let cap: Float = 3.0
-                self.faceVel.x = min(max(vx, -cap), cap)
-                self.faceVel.y = min(max(vy, -cap), cap)
-                self.faceVel.z = min(max(vz, -cap), cap)
-                self.faceVel.w = min(max(vw, -cap), cap)
+            // 速度必须用**实测框**算,不能用平滑后的椭圆:
+            // EMA 每步只走 35%,用它的差值当速度会把真实速度低估约 3 倍,
+            // 外推补偿自然不够 → "跟得慢"
+            if self.lastFaceOkAt > 0 {
+                let dt2 = Float(max(tNow2 - self.lastFaceOkAt, 0.001))
+                if dt2 < 0.5 {
+                    func capv(_ v: Float, _ lim: Float) -> Float {
+                        min(max(v, -lim), lim)
+                    }
+                    let mvx = capv((cx - self.lastMeasured.x) / dt2, 3.0)
+                    let mvy = capv((cy - self.lastMeasured.y) / dt2, 3.0)
+                    let mvz = capv((rx - self.lastMeasured.z) / dt2, 2.0)
+                    let mvw = capv((ry - self.lastMeasured.w) / dt2, 2.0)
+                    let vk: Float = 0.35        // 速度再做轻平滑,抑制误检毛刺
+                    self.faceVel.x += (mvx - self.faceVel.x) * vk
+                    self.faceVel.y += (mvy - self.faceVel.y) * vk
+                    self.faceVel.z += (mvz - self.faceVel.z) * vk
+                    self.faceVel.w += (mvw - self.faceVel.w) * vk
+                }
             }
-            self.prevEllipse = self.faceEllipse
+            self.lastMeasured = SIMD4<Float>(cx, cy, rx, ry)
             self.lastFaceOkAt = tNow2
         }
     }
