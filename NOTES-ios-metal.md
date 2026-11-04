@@ -1,45 +1,43 @@
-# iOS Metal 美颜核 — 进度备忘(2026-11-03 凌晨,核已编成,待装机)
+# iOS 美颜核 — 进度备忘(2026-11-05 收工)
 
-## 🎉 里程碑:v31 构建全绿,CI 内核 11457 字节 sym=2,已注入 ipa
-96 字节空库之谜终结。完整根因链(以后别再踩):
-1. CI 内核编译需 `-fcikernel`(函数才算入口点)——v23b 手工编译缺它 → 空库
-2. 链接需 `metallib -cikernel` ——v29/v30 走 Xcode 规则编译 `.ci.metal`,
-   Xcode 内置规则在这条工具链上不生效,air-lld 报 `symbol(s) not found`
-3. 最终方案(v31,已提交):**完全绕开 Xcode**,workflow 手工执行:
-   xcrun -sdk iphoneos metal -fcikernel -c -target air64-apple-ios15.0.0
-     ios/Kernel/hinter.ci.metal -o /tmp/hinter.ci.air
-   xcrun -sdk iphoneos metallib -cikernel /tmp/hinter.ci.air -o /tmp/hinter.metallib
-   然后注入 Payload/Runner.app/default.metallib,strings 验 hinterBeauty 符号
+## 当前设备
+- 已下载待装:**E:\hinter-v57.ipa**(1.0.49+49,metallib 11190B,zip 校验通过)
+- 上一版 v56(1.0.48+48)= 诊断版(带坐标标注),可弃
 
-## 顺手排掉的另两个坑
-- run#50/51 构建失败真因(被噪音淹没数轮):shared_preferences_foundation-2.6.1
-  生成代码含 Swift 6.1 尾逗号,Xcode 15.4 编不动 → runner 换 macos-15(默认 Xcode 16.4)
-- **macos-14 镜像 2026-11-02 起已完全退役**,以后必须 macos-15+
+## 重要:CI 通道已解决
+- GitHub Actions 免费额度用尽(macOS 10 倍计费,当天打了 25 次包)
+- **仓库已改为 public** → Actions 免费不限量,构建恢复正常
+- 公开前已扫描当前树与全部提交历史,无硬编码密钥(GITHUB_TOKEN/HF_TOKEN 走 Secrets)
+- 触发构建:`POST /actions/workflows/ios-release.yml/dispatches -f ref=main`
+  (token 取法:`printf "protocol=https\nhost=github.com\n\n" | git credential fill` 的 password)
 
-## 当前状态
-- release 资产已更新为 run#53 版(262241523 字节,2026-11-02T17:40Z)
-- ipa 下载:私有仓库 browser_download_url 404(即使带 token),必须走
-  **API octet-stream**:GET /releases/assets/702611127 + Accept: application/octet-stream
-  + `-x http://127.0.0.1:7890`(本机代理)+ `curl -C -` 断点续传
-  脚本:/c/tmp/dl_ipa2.sh → **E:\hinter-v30.ipa**(校验含 zip 完整性+metallib 字节+版本)
-- 版本 1.0.23+23(装机后 pymobiledevice3 apps list 可区分新旧)
+## 已确认生效的部分(用户验收过)
+- 画面黑影/水彩涂抹伪影:**已消失**(改单输入核内模糊)
+- 磨皮:**有效果**(边缘保护改 1.5px 梯度;强度 0.70;鼻侧梯度门槛 0.09~0.36)
+- 美白:**有效果、自然**(曝光式增益,非向白混合)
+- 瘦脸:**形变有效**(脸确实变窄)
 
-## 下一步(睡醒后)
-1. Sideloadly 装 E:\hinter-v30.ipa
-2. 拉日志验核:`pymobiledevice3 apps pull com.hinter.hinter.562DJX6G75
-   Documents/hinter_diag.log <本地>` → grep beautyKernel → 期望 **LOADED**
-3. 实测:磨皮/美白是否脸部定向(不再全屏)、瘦脸是否生效不抖
-4. 注意:face 坐标系假设——metal 里 `disp=(uv.x, 1-uv.y)` 假定 coord() 是左下原点;
-   若装机后发现掩码上下颠倒(磨皮落在背景),把 disp 翻转即可(一处改动)
-5. 验证通过 → 拆埋点(Ddiag、四层音频埋点、ciWrite、frame70.png)出正式版
+## 关键排查结论(别再走回头路)
+1. **"椭圆跑偏/不跟脸"多半是误判**:v56 把内核实际使用的椭圆画进抓帧(红框),
+   证明检测是准确的。之前"椭圆在头顶上方"的结论是拿不同时刻的图和日志对比造成的。
+   → 以后驗证坐标必须用 v56 的 debugMark 方式(同帧标注),不要事后对齐。
+2. 面中部那条美白横线 = 代码里的硬性"下巴切线"(Vision 脸框下沿只到嘴时切线落在脸中)。
+   **已删除**,改为掩码椭圆向下拉长 1.3 倍,在颈部前淡出。
+3. 瘦脸带纵向标定(v55→v57 的教训):
+   - 标注帧实测:下巴 ≈ vy 1.5,颌角 ≈ vy 0.6,脖子 > 1.6
+   - 旧带 0.45~1.22 只到嘴唇下方 → 压缩跨嘴和脖子,够不到下颌
+   - **v57 已改为 0.45~1.55**,峰值落在下颌线,脖子前淡出
+4. 检测侧已优化:去掉关键点请求(提速)、节流 0.07s、速度用实测框估计、
+   按检测延迟做椭圆外推、快速跟随(k=0.55)
 
-## 额度
-- 今晚消耗 4 runs(#50~#53,含一次排队被取消),约 15 build 分钟 = 150 计费分钟
-- 私有仓库 macOS 10x 计费;11 月剩 ~1850 计费分钟 ≈ 18 次构建,够用
-- gh CLI 本机不可用(不在 PATH),用 git credential 里的 token 走 REST:
-  `printf "protocol=https\nhost=github.com\n\n" | git credential fill` → password
+## 下一步(明天)
+1. 装 E:\hinter-v57.ipa,瘦脸拉 85 看压缩是否落在下颌线
+2. 若位置仍偏差,只需调 `ios/Kernel/hinter.ci.metal` 里 vBand 的两个数(0.45/1.55 与 1.30/1.55)
+3. 验收通过后**拆埋点出正式版**,要删:
+   - `debugMark()` 与 slimCapture 抓帧、frame70/frame900 写盘
+   - `det` / `render #` 日志、Ddiag 落盘、四层音频埋点
+4. 同时把 `documents` 里遗留的 hinter_diag.log 说明清理
 
-## 设备端诊断命令速查(不变)
-- 拉日志:`pymobiledevice3 apps pull com.hinter.hinter.562DJX6G75 Documents/hinter_diag.log <本地>`
-- 查版本:`pymobiledevice3 apps list`
-- 判定成功:`grep beautyKernel` → LOADED
+## 已知待办(非阻塞)
+- 跟读停读已改"滑停"(1.2s 判定 + 速度衰减),未单独验收
+- HF 中转工作流 run#2 失败(不影响主流程)
