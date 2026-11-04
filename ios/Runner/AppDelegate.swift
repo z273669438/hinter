@@ -872,7 +872,9 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
             let boxBottom = cy + boxH * 0.5
             jy = min(max(jy, boxBottom - boxH * 0.10), boxBottom + boxH * 0.04)
             jw = rx * 0.62          // 仅供日志核对,内核横向用 fr.x
-            jty = min(max(jty, jy - boxH * 0.42), jy - boxH * 0.10)
+            // 下颌上界直接用框高比例(0.32×框高),不再用轮廓顶点:
+            // 轮廓顶点在抬头/低头时飘得厉害,压缩带会跟着上下跑
+            jty = jy - boxH * 0.32
             // 2) 中值滤波:保留最近 3 次,取逐分量中值,单帧跳变直接丢弃
             self.jawHist.append(SIMD4<Float>(jx, jy, jw, jty))
             if self.jawHist.count > 3 { self.jawHist.removeFirst() }
