@@ -279,6 +279,7 @@ class HinterCameraPlugin: NSObject, FlutterPlugin {
     /// 最近一次成功检出人脸的媒体时间(用于漏检保持)
     private var lastFaceOkAt: CFTimeInterval = 0
     private var faceTick: Int = 0
+    private var slimCapture = 0
     /// 下颌锚点(左上原点归一化): chinX, chinY, jawHalfW, jawTopY
     /// 来自 Vision faceContour 轮廓点,而不是脸框比例推算
     private var jawAnchor = SIMD4<Float>(0.5, 0.74, 0.14, 0.62)
@@ -833,12 +834,16 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
                 }
             }
             if let c = lmObs?.landmarks?.faceContour, c.pointCount > 4 {
+                // 关键点用 pointsInImage:直接给图像像素坐标(原点左下),
+                // 比 normalizedPoints(按框归一化)可靠 —— 后者换算出的下巴
+                // 会跑到脸框下沿之外(jaw.y=0.89 vs 框底 0.80)
+                let sz = CGSize(width: CVPixelBufferGetWidth(pb),
+                                height: CVPixelBufferGetHeight(pb))
                 var pts: [(Float, Float)] = []
                 pts.reserveCapacity(c.pointCount)
-                for pt in c.normalizedPoints {
-                    let ix = Float(bb.minX) + Float(pt.x) * Float(bb.width)
-                    let iy = 1.0 - (Float(bb.minY) + Float(pt.y) * Float(bb.height))
-                    pts.append((ix, iy))
+                for pt in c.pointsInImage(imageSize: sz) {
+                    pts.append((Float(pt.x / sz.width),
+                                1.0 - Float(pt.y / sz.height)))
                 }
                 let topY = pts.map { $0.1 }.min() ?? 0
                 let botY = pts.map { $0.1 }.max() ?? 1
@@ -984,6 +989,14 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
             // 900 帧≈15s:此时用户通常已在调滑块,留一张带美颜参数的实拍帧做对照
             if renderCount == 900 {
                 ciWrite(ci, ctx: ctx, name: "frame900.png")
+            }
+            // 瘦脸生效且有脸时抓前 3 帧,用于人工核对形变落点
+            if slimCapture < 3, beauty.slim > 0.5, faceOn {
+                ciWrite(ci, ctx: ctx, name: "slim\(slimCapture).png")
+                diag("slimCapture #\(slimCapture) jaw=(\(String(format: "%.2f", jawAnchor.x)),"
+                     + "\(String(format: "%.2f", jawAnchor.y)),\(String(format: "%.2f", jawAnchor.z)),"
+                     + "\(String(format: "%.2f", jawAnchor.w))) sl=\(String(format: "%.2f", beauty.slim))")
+                slimCapture += 1
             }
             sink.present(outBuf)
             let tid = textureId
