@@ -64,9 +64,9 @@ float4 hinterBeauty(sampler s, float smoothA, float whitenA, float ruddyA,
     if (slimA > 0.001 && faceOn > 0.5) {
         float2 dd = disp - fc;
         float vy = dd.y / max(fr.y, 0.02);
-        float vBand = smoothstep(0.15, 0.55, vy) * (1.0 - smoothstep(1.00, 1.28, vy));
+        float vBand = smoothstep(0.45, 0.78, vy) * (1.0 - smoothstep(1.00, 1.22, vy));
         float lateral = 1.0 - smoothstep(0.90, 1.15, fabs(dd.x) / max(fr.x, 0.02));
-        float k = slimA * 0.22 * vBand * lateral;
+        float k = slimA * 0.18 * vBand * lateral;
         disp.x = fc.x + dd.x * (1.0 + k);   // 向外取样 = 下半脸内收
         uv = clamp(float2(disp.x, 1.0 - disp.y), 0.003, 0.997);
     }
@@ -78,13 +78,15 @@ float4 hinterBeauty(sampler s, float smoothA, float whitenA, float ruddyA,
 
     // ---- 空间掩码:超椭圆(n=3),而不是正椭圆 ----
     // 正椭圆下脸颊/下颌落在椭圆外,权重只剩 0.5~0.6,观感是"只有上半张脸有效"
-    float2 q = fabs((disp - fc) / (fr * 1.22));
+    // 下半脸延展:不要硬性"下巴切线"(脸框下沿只到嘴时会切出面部横线),
+    // 改为把椭圆向下拉长 30%,让掩码自然盖过下巴、在颈部前平滑淡出
+    float dyc = disp.y - fc.y;
+    float ryEff = fr.y * (dyc > 0.0 ? 1.30 : 1.00);
+    float2 q = fabs(float2((disp.x - fc.x) / (fr.x * 1.22),
+                           dyc / (ryEff * 1.22)));
     float q3 = q.x * q.x * q.x + q.y * q.y * q.y;
     float dMask = pow(max(q3, 0.0), 1.0 / 3.0);
     float spatialMask = 1.0 - smoothstep(0.92, 1.22, dMask);
-    // 下巴线≈脸框下沿(fr.y = 0.62×框高,故 0.82 即框底),再往下排除颈部
-    float chinLine = fc.y + fr.y * 0.88;
-    spatialMask *= 1.0 - smoothstep(chinLine - 0.02, chinLine + 0.08, disp.y);
 
     float m = skinCol * spatialMask * mix(0.45, 1.0, faceOn);
     m *= 1.0 - smoothstep(0.94, 1.00, lum);   // 只让开接近纯白的高光
