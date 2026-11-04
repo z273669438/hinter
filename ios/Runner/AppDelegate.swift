@@ -280,6 +280,7 @@ class HinterCameraPlugin: NSObject, FlutterPlugin {
     private var lastFaceOkAt: CFTimeInterval = 0
     private var faceTick: Int = 0
     private var slimCapture = 0
+    private var jawHist: [SIMD4<Float>] = []
     /// 下颌锚点(左上原点归一化): chinX, chinY, jawHalfW, jawTopY
     /// 来自 Vision faceContour 轮廓点,而不是脸框比例推算
     private var jawAnchor = SIMD4<Float>(0.5, 0.74, 0.14, 0.62)
@@ -864,12 +865,31 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
                     jty = min(jTop, jy - hgt * 0.30)
                 }
             }
-            // EMA 平滑,避免逐帧抖动
-            let jk: Float = 0.45
-            self.jawAnchor.x += (jx - self.jawAnchor.x) * jk
-            self.jawAnchor.y += (jy - self.jawAnchor.y) * jk
-            self.jawAnchor.z += (jw - self.jawAnchor.z) * jk
-            self.jawAnchor.w += (jty - self.jawAnchor.w) * jk
+            // ---- 锚点稳定化(转头不抖、不塌)----
+            // 1) 解剖约束:下巴必须贴着脸框下沿,半宽必须与脸框同量级
+            //    关键点在侧脸/俯仰帧会跑飞,不约束就会把压缩带甩到脸上别处
+            let boxH = ry / 0.62
+            let boxBottom = cy + boxH * 0.5
+            jy = min(max(jy, boxBottom - boxH * 0.10), boxBottom + boxH * 0.04)
+            jw = min(max(jw, rx * 0.45), rx * 1.05)
+            jty = min(max(jty, jy - boxH * 0.42), jy - boxH * 0.10)
+            // 2) 中值滤波:保留最近 3 次,取逐分量中值,单帧跳变直接丢弃
+            self.jawHist.append(SIMD4<Float>(jx, jy, jw, jty))
+            if self.jawHist.count > 3 { self.jawHist.removeFirst() }
+            let hist = self.jawHist
+            func med(_ i: Int) -> Float {
+                let v = hist.map { $0[i] }.sorted()
+                return v.count % 2 == 1
+                    ? v[v.count / 2]
+                    : (v[v.count / 2 - 1] + v[v.count / 2]) * 0.5
+            }
+            let mj = SIMD4<Float>(med(0), med(1), med(2), med(3))
+            // 3) 慢 EMA:10fps 下 k=0.18 → 约 0.5s 跟到位,肉眼看不到跳变
+            let jk: Float = 0.18
+            self.jawAnchor.x += (mj.x - self.jawAnchor.x) * jk
+            self.jawAnchor.y += (mj.y - self.jawAnchor.y) * jk
+            self.jawAnchor.z += (mj.z - self.jawAnchor.z) * jk
+            self.jawAnchor.w += (mj.w - self.jawAnchor.w) * jk
 
             // 位置/尺寸突变都要阻尼:Vision 偶发把框检成一半大小(rx 0.37→0.17),
             // 单帧采纳会让美颜区突然缩到脸中间,观感就是"不跟脸"
