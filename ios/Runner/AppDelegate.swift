@@ -786,7 +786,7 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
             // 合理性校验:误检(下巴/反光/肩部)会把瘦脸位移推到头发和画面边缘
             let ratio = ry / max(rx, 0.001)
             let sane = cx > 0.08 && cx < 0.92 && cy > 0.05 && cy < 0.92
-                && rx > 0.05 && rx < 0.56 && ry > 0.04 && ry < 0.50
+                && rx > 0.085 && rx < 0.56 && ry > 0.065 && ry < 0.50
                 && ratio > 0.38 && ratio < 1.05
             guard sane else {
                 self.onFaceMiss()
@@ -797,7 +797,11 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
             let jump = abs(cx - self.faceEllipse.x) + abs(cy - self.faceEllipse.y)
             let sizeRatio = rx / max(self.faceEllipse.z, 0.001)
             let sizeWild = sizeRatio < 0.72 || sizeRatio > 1.40
-            let k: Float = sizeWild ? 0.06 : (jump > 0.28 ? 0.12 : 0.35)
+            // 椭圆已经塌陷(被误检拖小)时直接吸附恢复,否则美颜掩码等于关闭,
+            // 表现就是"滑块怎么拉都没反应"
+            let collapsed = self.faceEllipse.z < 0.085
+            let k: Float = collapsed ? 1.0
+                : (sizeWild ? 0.06 : (jump > 0.28 ? 0.12 : 0.35))
             self.faceEllipse.x += (cx - self.faceEllipse.x) * k
             self.faceEllipse.y += (cy - self.faceEllipse.y) * k
             self.faceEllipse.z += (rx - self.faceEllipse.z) * k
@@ -825,31 +829,23 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
 
         var ci = CIImage(cvPixelBuffer: pb)
         let extent = ci.extent
-        let srcImg = ci
 
-        // 1) 高斯模糊(磨皮基础;通用核支持第二输入图像,质量优于核内采样)
-        //    半径必须跟**人脸像素宽度**成比例,而不是固定像素:
-        //    手机远拍脸占画面 ~40%,平板自拍脸占 ~76%,固定 σ 时前者看不出来
-        //    后者又过头。face.zw 是检测框的 0.55 倍,除回去得到框宽。
+        // 模糊半径(像素):按人脸框像素宽取比例 → 手机/平板、近/远观感一致
         let faceWpx = faceEllipse.z > 0.02
             ? CGFloat(faceEllipse.z) / 0.55 * extent.width
-            : extent.width * 0.25            // 未检测到脸:按中等脸宽估
-        let sigma = min(max(faceWpx * (0.004 + 0.012 * beauty.smooth), 1.5), 16.0)
-        blurFilter?.setValue(ci.clampedToExtent(), forKey: kCIInputImageKey)
-        blurFilter?.setValue(sigma, forKey: kCIInputRadiusKey)
-        let blurred = blurFilter?.outputImage?.cropped(to: extent)
+            : extent.width * 0.25
+        let blurR = min(max(faceWpx * (0.004 + 0.012 * beauty.smooth), 1.5), 16.0)
 
-        // 2) 美颜:优先 Metal 通用核(肤色×椭圆掩码,脸部定向,含瘦脸);
-        //    metallib 缺失/加载失败时回退全屏 CI 链(强度刻意压低)
-        if let kernel = beautyKernel, let b = blurred {
+        // 美颜:单输入 Metal 通用核(模糊在核内做,避免第二输入图坐标错位)
+        if let kernel = beautyKernel {
             let fw = CGFloat(faceEllipse.z * 2)
             let jaw = CIVector(x: fw * 0.46, y: fw * 0.60,
                                z: fw * 0.86, w: fw * 0.98)
             let out = kernel.apply(
                 extent: extent,
-                roiCallback: { _, r in r.insetBy(dx: -128, dy: -128) },
+                roiCallback: { _, r in r.insetBy(dx: -48, dy: -48) },
                 arguments: [
-                    srcImg, b,
+                    ci,
                     NSNumber(value: beauty.smooth),
                     NSNumber(value: beauty.whiten),
                     NSNumber(value: beauty.ruddy),
@@ -864,15 +860,20 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
                     jaw,
                     CIVector(x: 1.0 / max(extent.width, 1),
                              y: 1.0 / max(extent.height, 1)),
+                    NSNumber(value: Double(blurR)),
                 ])
             if let o = out { ci = o }
         } else {
             // 回退链:全屏高斯磨皮 + 提亮(仅在核不可用时生效)
-            if beauty.smooth > 0.01, let b = blurred {
-                ci = ci.applyingFilter("CIDissolveTransition", parameters: [
-                    "inputTargetImage": b,
-                    "inputTime": NSNumber(value: 0.05 + 0.30 * beauty.smooth),
-                ])
+            if beauty.smooth > 0.01 {
+                blurFilter?.setValue(ci.clampedToExtent(), forKey: kCIInputImageKey)
+                blurFilter?.setValue(2.5 + beauty.smooth * 5.0, forKey: kCIInputRadiusKey)
+                if let b = blurFilter?.outputImage?.cropped(to: extent) {
+                    ci = ci.applyingFilter("CIDissolveTransition", parameters: [
+                        "inputTargetImage": b,
+                        "inputTime": NSNumber(value: 0.05 + 0.30 * beauty.smooth),
+                    ])
+                }
             }
             if beauty.whiten > 0.01 {
                 ci = ci.applyingFilter("CIGammaAdjust", parameters: [
