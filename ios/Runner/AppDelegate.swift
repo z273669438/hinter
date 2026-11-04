@@ -766,10 +766,13 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
         faceQueue.async { [weak self] in
             guard let self = self else { return }
             defer { self.faceBusy = false }
-            let req = VNDetectFaceLandmarksRequest()
+            // 两个请求一起跑:矩形检测稳定(关键点检测在正脸不稳时几乎全失败),
+            // 关键点只用来补下颌轮廓,拿不到就退回矩形推算
+            let req = VNDetectFaceRectanglesRequest()
+            let lmReq = VNDetectFaceLandmarksRequest()
             let handler = VNImageRequestHandler(cvPixelBuffer: pb, options: [:])
             do {
-                try handler.perform([req])
+                try handler.perform([req, lmReq])
             } catch {
                 diag("det THROW \(error.localizedDescription)")
                 return
@@ -817,7 +820,15 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
             var jy = cy + ry * 0.80
             var jw = rx * 0.60
             var jty = jy - ry * 0.55
-            if let c = best.landmarks?.faceContour, c.pointCount > 4 {
+            // 关键点结果里找与矩形框最接近的 observation(中心距离最小)
+            var lmObs: VNFaceObservation?
+            if let lms = lmReq.results, !lms.isEmpty {
+                lmObs = lms.min { a, b in
+                    hypot(a.boundingBox.midX - bb.midX, a.boundingBox.midY - bb.midY) <
+                        hypot(b.boundingBox.midX - bb.midX, b.boundingBox.midY - bb.midY)
+                }
+            }
+            if let c = lmObs?.landmarks?.faceContour, c.pointCount > 4 {
                 var pts: [(Float, Float)] = []
                 pts.reserveCapacity(c.pointCount)
                 for pt in c.normalizedPoints {
@@ -956,7 +967,9 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
                  + "c=(\(String(format: "%.3f", faceEllipse.x)),\(String(format: "%.3f", faceEllipse.y))) "
                  + "r=(\(String(format: "%.3f", faceEllipse.z)),\(String(format: "%.3f", faceEllipse.w))) "
                  + "sl=\(String(format: "%.2f", beauty.smooth))/\(String(format: "%.2f", beauty.whiten))"
-                 + "/\(String(format: "%.2f", beauty.slim))")
+                 + "/\(String(format: "%.2f", beauty.slim))"
+                 + " jaw=(\(String(format: "%.2f", jawAnchor.x)),\(String(format: "%.2f", jawAnchor.y))"
+                 + ",\(String(format: "%.2f", jawAnchor.z)),\(String(format: "%.2f", jawAnchor.w)))")
         }
         if let sink = sink, let ctx = ciContext, textureId >= 0,
            let outBuf = makeBuffer() {
