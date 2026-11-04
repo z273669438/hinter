@@ -56,21 +56,18 @@ float4 hinterBeauty(sampler s, float smoothA, float whitenA, float ruddyA,
     float2 fc = face.xy;
     float2 fr = max(face.zw, float2(0.045)); // 无脸时椭圆≈0 → 几乎不处理
 
-    // ---- 瘦脸:下颌段向中线压缩 ----
-    // jaw=(chinX, chinY, jawHalfW, jawTopY)。纵向用轮廓取真实下巴/下颌上界;
-    // 横向量程必须用**脸框半宽 fr.x** —— 轮廓点在下巴附近稀疏,量出的半宽
-    // 只有 0.13(脸半宽 0.29),压缩带碰不到脸缘,肉眼就"没效果"
+    // ---- 瘦脸:复用磨皮/美白同一套人脸椭圆几何 ----
+    // 历史教训:用 Vision 关键点(jaw)另起一套锚点时,侧脸/俯仰/下巴出画
+    // 都会让压缩带跑到脸上别处;而磨皮掩码用的 fc/fr 一直是对的。
+    // 现在瘦脸与掩码共用 fc/fr → 磨皮落哪,瘦脸就落哪。
+    // vy = (disp.y - fc.y)/fr.y:下半脸 0.5~1.0,下巴≈1.0
     if (slimA > 0.001 && faceOn > 0.5) {
-        float jx = jaw.x;
-        float jy = jaw.y;
-        float jty = jaw.w;
-        float hh = clamp((disp.y - jy) / (jty - jy), 0.0, 1.0);
-        // 纵向:下巴(hh=0)到下颌上界(hh=1),两端平滑
-        float vBand = smoothstep(0.00, 0.25, hh) * (1.0 - smoothstep(0.78, 1.00, hh));
-        // 横向:以下巴中线为轴,脸缘(1.0×fr.x)外淡出
-        float lateral = 1.0 - smoothstep(0.95, 1.20, fabs(disp.x - jx) / fr.x);
-        float k = slimA * 0.20 * vBand * lateral;
-        disp.x = jx + (disp.x - jx) * (1.0 + k);   // 向外取样 = 脸缘内收
+        float2 dd = disp - fc;
+        float vy = dd.y / max(fr.y, 0.02);
+        float vBand = smoothstep(0.15, 0.55, vy) * (1.0 - smoothstep(1.00, 1.28, vy));
+        float lateral = 1.0 - smoothstep(0.90, 1.15, fabs(dd.x) / max(fr.x, 0.02));
+        float k = slimA * 0.22 * vBand * lateral;
+        disp.x = fc.x + dd.x * (1.0 + k);   // 向外取样 = 下半脸内收
         uv = clamp(float2(disp.x, 1.0 - disp.y), 0.003, 0.997);
     }
 
