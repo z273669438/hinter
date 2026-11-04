@@ -72,21 +72,21 @@ float4 hinterBeauty(sampler s, float smoothA, float whitenA, float ruddyA,
     float3 sc0 = s.sample(uv).rgb;           // 位移前源色(瘦脸的肤色门控)
     float skinHere = skinMaskOf(sc0);
 
-    // ---- 瘦脸:下颌段整体向中线压缩(比例缩放,视觉上是"脸变窄")----
-    // 旧实现是沿脸缘一条窄环做局部位移:位移量不小(实测 40px),但只在环
-    // 带内"捏"一下,肉眼几乎看不出轮廓变化 → 改成整段比例压缩
-    if (slimA > 0.001 && faceOn > 0.5 && skinHere > 0.05) {
+    // ---- 瘦脸:只压缩下颌段(比例缩放)----
+    // 纵向带收窄到"嘴以下→下巴":旧版上界到 0.68,把颧骨也压了,
+    // 观感是"整体水平压扁、没有下颌线弧度"
+    if (slimA > 0.001 && faceOn > 0.5) {
         float chinY = fc.y + fr.y * 0.80;
         float topY = fc.y - fr.y * 1.00;
         float hh = clamp((disp.y - chinY) / (topY - chinY), 0.0, 1.0);
-        // 纵向门控:0=下巴(下) → 1=额角(上);到嘴边淡出,太阳穴以上完全不碰
-        float vBand = smoothstep(0.00, 0.18, hh) *
-                      (1.0 - smoothstep(0.42, 0.68, hh));
+        float vBand = smoothstep(0.00, 0.12, hh) *
+                      (1.0 - smoothstep(0.24, 0.40, hh));
         float2 dd = disp - fc;
         float tt = length(dd / fr);
-        float inside = 1.0 - smoothstep(1.00, 1.35, tt);   // 脸外不加力
-        float k = slimA * 0.13 * vBand * inside *
-                  smoothstep(0.15, 0.75, skinHere);        // 非皮肤零位移
+        float inside = 1.0 - smoothstep(1.00, 1.35, tt);
+        // 不再用逐像素肤色门控:它让 k 在皮肤/阴影边界跳变,出现"原脸颊位置
+        // 的线条"。几何范围(超椭圆内 + 下颌带)已经足够,头发本就在带外
+        float k = slimA * 0.16 * vBand * inside;
         disp.x = fc.x + dd.x * (1.0 + k);   // 向外取样 = 脸缘向内收
         uv = clamp(float2(disp.x, 1.0 - disp.y), 0.003, 0.997);
     }
@@ -125,7 +125,7 @@ float4 hinterBeauty(sampler s, float smoothA, float whitenA, float ruddyA,
     float grad = length(gx) + length(gy);
     float keep = smoothstep(0.09, 0.36, grad);   // 发丝/眼镜/睫毛保留
     float3 smoothed = mix(blr, sc, keep);
-    float st = clamp(smoothA * 0.95 * m, 0.0, 0.92);  // 滑块=0 时完全不磨
+    float st = clamp(smoothA * 0.70 * m, 0.0, 0.85);  // 滑块=0 时完全不磨
     float3 c = mix(sc, smoothed, st);
     c += (sc - blr) * (st * 0.15);               // 纹理回加,防塑料
 
