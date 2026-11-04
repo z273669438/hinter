@@ -72,27 +72,22 @@ float4 hinterBeauty(sampler s, float smoothA, float whitenA, float ruddyA,
     float3 sc0 = s.sample(uv).rgb;           // 位移前源色(瘦脸的肤色门控)
     float skinHere = skinMaskOf(sc0);
 
-    // ---- 瘦脸:只推皮肤,不碰头发/背景 ----
+    // ---- 瘦脸:下颌段整体向中线压缩(比例缩放,视觉上是"脸变窄")----
+    // 旧实现是沿脸缘一条窄环做局部位移:位移量不小(实测 40px),但只在环
+    // 带内"捏"一下,肉眼几乎看不出轮廓变化 → 改成整段比例压缩
     if (slimA > 0.001 && faceOn > 0.5 && skinHere > 0.05) {
         float chinY = fc.y + fr.y * 0.80;
         float topY = fc.y - fr.y * 1.00;
         float hh = clamp((disp.y - chinY) / (topY - chinY), 0.0, 1.0);
-        float hw = max(jawHalf(jaw, hh), 0.04);
-        float dx = disp.x - fc.x;
-        // 与掩码同一套超椭圆度量,贴着脸缘收
-        float2 qs = fabs((disp - fc) / fr);
-        float rr = pow(max(qs.x * qs.x * qs.x + qs.y * qs.y * qs.y, 0.0), 1.0 / 3.0);
-        float vBand = smoothstep(0.02, 0.16, hh) *
-                      (1.0 - smoothstep(0.34, 0.55, hh));
-        float band = smoothstep(0.50, 0.92, rr) * (1.0 - smoothstep(1.02, 1.20, rr));
-        float lat = smoothstep(0.15, 0.75, fabs(dx) / max(fr.x, 0.05));
-        float sh = slimA * hw * 0.16 * band * vBand * lat;
-        sh *= smoothstep(0.15, 0.75, skinHere);   // 非皮肤零位移
-        float slope = (jawHalf(jaw, min(hh + 0.10, 1.0)) -
-                       jawHalf(jaw, max(hh - 0.10, 0.0))) / 0.20;
-        float inv = rsqrt(1.0 + slope * slope);
-        disp.x += (dx < 0.0 ? -sh : sh) * inv;
-        disp.y += fabs(sh) * slope * inv * 0.6;
+        // 纵向门控:0=下巴(下) → 1=额角(上);到嘴边淡出,太阳穴以上完全不碰
+        float vBand = smoothstep(0.00, 0.18, hh) *
+                      (1.0 - smoothstep(0.42, 0.68, hh));
+        float2 dd = disp - fc;
+        float tt = length(dd / fr);
+        float inside = 1.0 - smoothstep(1.00, 1.35, tt);   // 脸外不加力
+        float k = slimA * 0.13 * vBand * inside *
+                  smoothstep(0.15, 0.75, skinHere);        // 非皮肤零位移
+        disp.x = fc.x + dd.x * (1.0 + k);   // 向外取样 = 脸缘向内收
         uv = clamp(float2(disp.x, 1.0 - disp.y), 0.003, 0.997);
     }
 
@@ -128,7 +123,7 @@ float4 hinterBeauty(sampler s, float smoothA, float whitenA, float ruddyA,
     float3 gy = s.sample(uv + float2(0.0, tx.y)).rgb
               - s.sample(uv - float2(0.0, tx.y)).rgb;
     float grad = length(gx) + length(gy);
-    float keep = smoothstep(0.05, 0.20, grad);   // 发丝/眼镜/睫毛保留
+    float keep = smoothstep(0.09, 0.36, grad);   // 发丝/眼镜/睫毛保留
     float3 smoothed = mix(blr, sc, keep);
     float st = clamp(smoothA * 0.95 * m, 0.0, 0.92);  // 滑块=0 时完全不磨
     float3 c = mix(sc, smoothed, st);
