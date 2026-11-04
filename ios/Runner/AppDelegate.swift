@@ -279,6 +279,9 @@ class HinterCameraPlugin: NSObject, FlutterPlugin {
     /// 最近一次成功检出人脸的媒体时间(用于漏检保持)
     private var lastFaceOkAt: CFTimeInterval = 0
     private var faceTick: Int = 0
+    /// 上一帧检出的人脸椭圆 + 速度,用于按检测延迟做位置外推
+    private var prevEllipse = SIMD4<Float>(0.5, 0.5, 0, 0)
+    private var faceVel = SIMD4<Float>(0, 0, 0, 0)
     private var slimCapture = 0
     private var jawHist: [SIMD4<Float>] = []
     /// 下颌锚点(左上原点归一化): chinX, chinY, jawHalfW, jawTopY
@@ -768,17 +771,16 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
         faceQueue.async { [weak self] in
             guard let self = self else { return }
             let now = CACurrentMediaTime()
-            if now - self.lastFaceDetect < 0.12 { return }
+            if now - self.lastFaceDetect < 0.07 { return }
             self.lastFaceDetect = now
             self.faceTick &+= 1
-            let wantLM = true   // 每次都跑关键点,避免锚点在两种来源间跳变
-            // 矩形检测稳定出框(关键点检测在正脸不稳时几乎全失败),
-            // 关键点只用来补下颌轮廓,拿不到就退回矩形推算
+            // 只跑矩形检测:关键点请求贵一倍以上,而内核瘦脸已改用 fc/fr,
+            // 不再需要轮廓点。去掉后检测帧率明显提高 → 转头时掩码不滞后
             let req = VNDetectFaceRectanglesRequest()
-            let lmReq = VNDetectFaceLandmarksRequest()
+            let lmReq = VNDetectFaceLandmarksRequest()   // 保留空壳以兼容下方匹配
             let handler = VNImageRequestHandler(cvPixelBuffer: pb, options: [:])
             do {
-                try handler.perform(wantLM ? [req, lmReq] : [req])
+                try handler.perform([req])
             } catch {
                 diag("det THROW \(error.localizedDescription)")
                 return
@@ -908,7 +910,22 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
             self.faceEllipse.z += (rx - self.faceEllipse.z) * k
             self.faceEllipse.w += (ry - self.faceEllipse.w) * k
             self.faceOn = true
-            self.lastFaceOkAt = CACurrentMediaTime()
+            let tNow2 = CACurrentMediaTime()
+            let dt2 = Float(max(tNow2 - self.lastFaceOkAt, 0.001))
+            if self.lastFaceOkAt > 0, dt2 < 0.5 {
+                let vx = (self.faceEllipse.x - self.prevEllipse.x) / dt2
+                let vy = (self.faceEllipse.y - self.prevEllipse.y) / dt2
+                let vz = (self.faceEllipse.z - self.prevEllipse.z) / dt2
+                let vw = (self.faceEllipse.w - self.prevEllipse.w) / dt2
+                // 限速,避免误检把速度拉爆
+                let cap: Float = 3.0
+                self.faceVel.x = min(max(vx, -cap), cap)
+                self.faceVel.y = min(max(vy, -cap), cap)
+                self.faceVel.z = min(max(vz, -cap), cap)
+                self.faceVel.w = min(max(vw, -cap), cap)
+            }
+            self.prevEllipse = self.faceEllipse
+            self.lastFaceOkAt = tNow2
         }
     }
 
@@ -937,9 +954,17 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
         var ci = CIImage(cvPixelBuffer: pb)
         let extent = ci.extent
 
+        // 按检测延迟外推人脸位置:检测只有几帧/秒,转头时椭圆会滞后,
+        // 表现为"磨皮/瘦脸跟着头漂、漏到背景"。用速度×延迟补偿即可贴合
+        let ageS = Float(min(max(CACurrentMediaTime() - lastFaceOkAt, 0), 0.35))
+        let ex = min(max(faceEllipse.x + faceVel.x * ageS, 0.0), 1.0)
+        let ey = min(max(faceEllipse.y + faceVel.y * ageS, 0.0), 1.0)
+        let ez = min(max(faceEllipse.z + faceVel.z * ageS, 0.02), 0.60)
+        let ew = min(max(faceEllipse.w + faceVel.w * ageS, 0.02), 0.45)
+
         // 模糊半径(像素):按人脸框像素宽取比例 → 手机/平板、近/远观感一致
-        let faceWpx = faceEllipse.z > 0.02
-            ? CGFloat(faceEllipse.z) / 0.55 * extent.width
+        let faceWpx = ez > 0.02
+            ? CGFloat(ez) / 0.55 * extent.width
             : extent.width * 0.25
         let blurR = min(max(faceWpx * (0.004 + 0.012 * beauty.smooth), 1.5), 16.0)
 
@@ -959,10 +984,8 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
                     NSNumber(value: beauty.brightness),
                     NSNumber(value: 0.78 + beauty.saturation * 0.5),
                     NSNumber(value: faceOn ? beauty.slim : 0.0),
-                    CIVector(x: CGFloat(faceEllipse.x),
-                             y: CGFloat(faceEllipse.y),
-                             z: CGFloat(faceEllipse.z),
-                             w: CGFloat(faceEllipse.w)),
+                    CIVector(x: CGFloat(ex), y: CGFloat(ey),
+                             z: CGFloat(ez), w: CGFloat(ew)),
                     NSNumber(value: faceOn ? 1.0 : 0.0),
                     jaw,
                     CIVector(x: 1.0 / max(extent.width, 1),
