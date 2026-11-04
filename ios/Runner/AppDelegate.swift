@@ -954,6 +954,38 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
         faceOn = false
     }
 
+    /// 在图上画出内核实际使用的椭圆(红)与瘦脸带上界(青),用于把
+    /// "坐标"和"画面"钉在同一帧上,排除时间差导致的误判
+    private func debugMark(_ img: CIImage, e: SIMD4<Float>,
+                           extent: CGRect) -> CIImage {
+        let W = extent.width, H = extent.height
+        let cx = CGFloat(e.x) * W
+        let cyCI = H - CGFloat(e.y) * H          // 转 CI 的左下原点
+        let rx = CGFloat(e.z) * W, ry = CGFloat(e.w) * H
+        let rect = CGRect(x: cx - rx, y: cyCI - ry,
+                          width: rx * 2, height: ry * 2)
+        let bw: CGFloat = 6
+        let red = CIColor(red: 1, green: 0, blue: 0, alpha: 1)
+        var out = img
+        for b in [CGRect(x: rect.minX, y: rect.minY, width: rect.width, height: bw),
+                  CGRect(x: rect.minX, y: rect.maxY - bw, width: rect.width, height: bw),
+                  CGRect(x: rect.minX, y: rect.minY, width: bw, height: rect.height),
+                  CGRect(x: rect.maxX - bw, y: rect.minY, width: bw, height: rect.height)] {
+            out = CIImage(color: red).cropped(to: b).composited(over: out)
+        }
+        // 青色横线 = 瘦脸带上界(vy=0.45);黄线 = 下界(vy=1.22)
+        for (vy, col) in [(Float(0.45), CIColor(red: 0, green: 1, blue: 1, alpha: 1)),
+                          (Float(1.22), CIColor(red: 1, green: 1, blue: 0, alpha: 1))] {
+            let y = cyCI - CGFloat(vy) * ry
+            if y > extent.minY && y < extent.maxY {
+                let r = CGRect(x: extent.minX, y: y - 3,
+                               width: extent.width, height: 6)
+                out = CIImage(color: col).cropped(to: r).composited(over: out)
+            }
+        }
+        return out.cropped(to: extent)
+    }
+
     private func handleVideo(_ sampleBuffer: CMSampleBuffer) {
         guard let pb = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
         lastVideoW = CVPixelBufferGetWidth(pb)
@@ -1046,7 +1078,9 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
             }
             // 瘦脸生效且有脸时抓前 3 帧,用于人工核对形变落点
             if slimCapture < 3, beauty.slim > 0.5, faceOn {
-                ciWrite(ci, ctx: ctx, name: "slim\(slimCapture).png")
+                let marked = debugMark(ci, e: SIMD4<Float>(ex, ey, ez, ew),
+                                       extent: extent)
+                ciWrite(marked, ctx: ctx, name: "slim\(slimCapture).png")
                 diag("slimCapture #\(slimCapture) jaw=(\(String(format: "%.2f", jawAnchor.x)),"
                      + "\(String(format: "%.2f", jawAnchor.y)),\(String(format: "%.2f", jawAnchor.z)),"
                      + "\(String(format: "%.2f", jawAnchor.w))) sl=\(String(format: "%.2f", beauty.slim))")
