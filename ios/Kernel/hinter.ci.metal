@@ -56,21 +56,21 @@ float4 hinterBeauty(sampler s, float smoothA, float whitenA, float ruddyA,
     float2 fc = face.xy;
     float2 fr = max(face.zw, float2(0.045)); // 无脸时椭圆≈0 → 几乎不处理
 
-    // ---- 瘦脸:按**真实下颌线**压缩(锚点取自 Vision faceContour 轮廓)----
-    // jaw = (chinX, chinY, jawHalfW, jawTopY),左上原点归一化。
-    // 之前用脸框比例推下颌位置,拍摄角度一变框就移位,压缩位置随之漂移
+    // ---- 瘦脸:下颌段向中线压缩 ----
+    // jaw=(chinX, chinY, jawHalfW, jawTopY)。纵向用轮廓取真实下巴/下颌上界;
+    // 横向量程必须用**脸框半宽 fr.x** —— 轮廓点在下巴附近稀疏,量出的半宽
+    // 只有 0.13(脸半宽 0.29),压缩带碰不到脸缘,肉眼就"没效果"
     if (slimA > 0.001 && faceOn > 0.5) {
         float jx = jaw.x;
-        float jy = jaw.y;                    // 下巴 y(下)
-        float jw = max(jaw.z, 0.03);         // 下颌半宽
-        float jty = jaw.w;                   // 下颌上界 y
+        float jy = jaw.y;
+        float jty = jaw.w;
         float hh = clamp((disp.y - jy) / (jty - jy), 0.0, 1.0);
-        // 只在"下巴 → 下颌上界"之间压缩,两端平滑过渡
-        float vBand = smoothstep(0.00, 0.22, hh) * (1.0 - smoothstep(0.82, 1.00, hh));
-        // 横向:以下巴中线为轴,下颌半宽内满强度,超出自宽后淡出
-        float lateral = 1.0 - smoothstep(0.95, 1.30, fabs(disp.x - jx) / jw);
-        float k = slimA * 0.16 * vBand * lateral;
-        disp.x = jx + (disp.x - jx) * (1.0 + k);   // 向外取样 = 下颌内收
+        // 纵向:下巴(hh=0)到下颌上界(hh=1),两端平滑
+        float vBand = smoothstep(0.00, 0.25, hh) * (1.0 - smoothstep(0.78, 1.00, hh));
+        // 横向:以下巴中线为轴,脸缘(1.0×fr.x)外淡出
+        float lateral = 1.0 - smoothstep(0.95, 1.20, fabs(disp.x - jx) / fr.x);
+        float k = slimA * 0.20 * vBand * lateral;
+        disp.x = jx + (disp.x - jx) * (1.0 + k);   // 向外取样 = 脸缘内收
         uv = clamp(float2(disp.x, 1.0 - disp.y), 0.003, 0.997);
     }
 

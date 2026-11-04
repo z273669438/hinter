@@ -871,7 +871,7 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
             let boxH = ry / 0.62
             let boxBottom = cy + boxH * 0.5
             jy = min(max(jy, boxBottom - boxH * 0.10), boxBottom + boxH * 0.04)
-            jw = min(max(jw, rx * 0.45), rx * 1.05)
+            jw = rx * 0.62          // 仅供日志核对,内核横向用 fr.x
             jty = min(max(jty, jy - boxH * 0.42), jy - boxH * 0.10)
             // 2) 中值滤波:保留最近 3 次,取逐分量中值,单帧跳变直接丢弃
             self.jawHist.append(SIMD4<Float>(jx, jy, jw, jty))
