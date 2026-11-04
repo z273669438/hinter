@@ -278,6 +278,9 @@ class HinterCameraPlugin: NSObject, FlutterPlugin {
     private var faceOn = false
     /// 最近一次成功检出人脸的媒体时间(用于漏检保持)
     private var lastFaceOkAt: CFTimeInterval = 0
+    /// 下颌锚点(左上原点归一化): chinX, chinY, jawHalfW, jawTopY
+    /// 来自 Vision faceContour 轮廓点,而不是脸框比例推算
+    private var jawAnchor = SIMD4<Float>(0.5, 0.74, 0.14, 0.62)
     private var lastDetLog: CFTimeInterval = 0
     private var lastFaceDetect: CFTimeInterval = 0
     private var faceBusy = false
@@ -763,7 +766,7 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
         faceQueue.async { [weak self] in
             guard let self = self else { return }
             defer { self.faceBusy = false }
-            let req = VNDetectFaceRectanglesRequest()
+            let req = VNDetectFaceLandmarksRequest()
             let handler = VNImageRequestHandler(cvPixelBuffer: pb, options: [:])
             do {
                 try handler.perform([req])
@@ -807,6 +810,47 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
                 self.onFaceMiss()
                 return
             }
+            // ---- 下颌锚点:优先用 faceContour 轮廓点 ----
+            // 用脸框比例推算时,拍摄角度一变框就移位,压缩位置随之漂移;
+            // 轮廓点是真实脸廓,下巴/下颌线位置稳定
+            var jx = cx
+            var jy = cy + ry * 0.80
+            var jw = rx * 0.60
+            var jty = jy - ry * 0.55
+            if let c = best.landmarks?.faceContour, c.pointCount > 4 {
+                var pts: [(Float, Float)] = []
+                pts.reserveCapacity(c.pointCount)
+                for pt in c.normalizedPoints {
+                    let ix = Float(bb.minX) + pt.x * Float(bb.width)
+                    let iy = 1.0 - (Float(bb.minY) + pt.y * Float(bb.height))
+                    pts.append((ix, iy))
+                }
+                let topY = pts.map { $0.1 }.min() ?? 0
+                let botY = pts.map { $0.1 }.max() ?? 1
+                let hgt = max(botY - topY, 0.02)
+                if let chin = pts.max(by: { $0.1 < $1.1 }) {
+                    jx = chin.0
+                    jy = chin.1
+                    var halfW: Float = 0.03
+                    var jTop: Float = jy - hgt * 0.45
+                    for (px, py) in pts {
+                        let up = jy - py                    // 下巴以上距离
+                        if up > hgt * 0.08 && up < hgt * 0.50 {
+                            halfW = max(halfW, abs(px - jx))
+                            jTop = min(jTop, py)
+                        }
+                    }
+                    jw = max(halfW, 0.03)
+                    jty = min(jTop, jy - hgt * 0.30)
+                }
+            }
+            // EMA 平滑,避免逐帧抖动
+            let jk: Float = 0.45
+            self.jawAnchor.x += (jx - self.jawAnchor.x) * jk
+            self.jawAnchor.y += (jy - self.jawAnchor.y) * jk
+            self.jawAnchor.z += (jw - self.jawAnchor.z) * jk
+            self.jawAnchor.w += (jty - self.jawAnchor.w) * jk
+
             // 位置/尺寸突变都要阻尼:Vision 偶发把框检成一半大小(rx 0.37→0.17),
             // 单帧采纳会让美颜区突然缩到脸中间,观感就是"不跟脸"
             let jump = abs(cx - self.faceEllipse.x) + abs(cy - self.faceEllipse.y)
@@ -859,9 +903,9 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
 
         // 美颜:单输入 Metal 通用核(模糊在核内做,避免第二输入图坐标错位)
         if let kernel = beautyKernel {
-            let fw = CGFloat(faceEllipse.z * 2)
-            let jaw = CIVector(x: fw * 0.46, y: fw * 0.60,
-                               z: fw * 0.86, w: fw * 0.98)
+            // jaw = (chinX, chinY, jawHalfW, jawTopY) 左上原点归一化
+            let jaw = CIVector(x: CGFloat(jawAnchor.x), y: CGFloat(jawAnchor.y),
+                               z: CGFloat(jawAnchor.z), w: CGFloat(jawAnchor.w))
             let out = kernel.apply(
                 extent: extent,
                 roiCallback: { _, r in r.insetBy(dx: -48, dy: -48) },
