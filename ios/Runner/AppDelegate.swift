@@ -278,12 +278,12 @@ class HinterCameraPlugin: NSObject, FlutterPlugin {
     private var faceOn = false
     /// 最近一次成功检出人脸的媒体时间(用于漏检保持)
     private var lastFaceOkAt: CFTimeInterval = 0
+    private var faceTick: Int = 0
     /// 下颌锚点(左上原点归一化): chinX, chinY, jawHalfW, jawTopY
     /// 来自 Vision faceContour 轮廓点,而不是脸框比例推算
     private var jawAnchor = SIMD4<Float>(0.5, 0.74, 0.14, 0.62)
     private var lastDetLog: CFTimeInterval = 0
     private var lastFaceDetect: CFTimeInterval = 0
-    private var faceBusy = false
     private var renderCount: Int64 = 0
 
     /// 美颜合成核(Metal,workflow 编译 default.metallib 注入 app 根目录)
@@ -759,20 +759,24 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
 
     /// Vision 人脸检测(限流 ~10fps,后台队列),结果写入 faceEllipse/faceOn
     private func detectFace(_ pb: CVPixelBuffer) {
-        let now = CACurrentMediaTime()
-        if faceBusy || now - lastFaceDetect < 0.1 { return }
-        faceBusy = true
-        lastFaceDetect = now
+        // 节流与状态全部放在串行队列内访问。
+        // 旧实现用跨线程 faceBusy 布尔量做互斥:faceQueue 写 false、视频线程读,
+        // 没有同步保证,视频线程会一直读到旧的 true → 检测静默停摆几十秒,
+        // 表现为美颜"不跟脸/位置固定"。改为队列内自节流后该隐患消失。
         faceQueue.async { [weak self] in
             guard let self = self else { return }
-            defer { self.faceBusy = false }
-            // 两个请求一起跑:矩形检测稳定(关键点检测在正脸不稳时几乎全失败),
+            let now = CACurrentMediaTime()
+            if now - self.lastFaceDetect < 0.12 { return }
+            self.lastFaceDetect = now
+            self.faceTick &+= 1
+            let wantLM = true   // 每次都跑关键点,避免锚点在两种来源间跳变
+            // 矩形检测稳定出框(关键点检测在正脸不稳时几乎全失败),
             // 关键点只用来补下颌轮廓,拿不到就退回矩形推算
             let req = VNDetectFaceRectanglesRequest()
             let lmReq = VNDetectFaceLandmarksRequest()
             let handler = VNImageRequestHandler(cvPixelBuffer: pb, options: [:])
             do {
-                try handler.perform([req, lmReq])
+                try handler.perform(wantLM ? [req, lmReq] : [req])
             } catch {
                 diag("det THROW \(error.localizedDescription)")
                 return
