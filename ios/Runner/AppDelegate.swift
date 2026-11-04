@@ -821,8 +821,8 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
                 var pts: [(Float, Float)] = []
                 pts.reserveCapacity(c.pointCount)
                 for pt in c.normalizedPoints {
-                    let ix = Float(bb.minX) + pt.x * Float(bb.width)
-                    let iy = 1.0 - (Float(bb.minY) + pt.y * Float(bb.height))
+                    let ix = Float(bb.minX) + Float(pt.x) * Float(bb.width)
+                    let iy = 1.0 - (Float(bb.minY) + Float(pt.y) * Float(bb.height))
                     pts.append((ix, iy))
                 }
                 let topY = pts.map { $0.1 }.min() ?? 0
