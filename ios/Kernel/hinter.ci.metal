@@ -19,19 +19,6 @@
 
 using namespace metal;
 
-// 半宽轮廓插值(jaw 存全宽,h:0=下巴 → 1=颧骨/额角)。C1 连续跨段 mix
-static inline float jawHalf(float4 jaw, float hh) {
-    float a0 = jaw.x * 0.5;
-    float a1 = jaw.y * 0.5;
-    float a2 = jaw.z * 0.5;
-    float a3 = jaw.w * 0.5;
-    float sA = mix(a0, a1, smoothstep(0.00, 0.33, hh));
-    float sB = mix(a1, a2, smoothstep(0.33, 0.66, hh));
-    float sC = mix(a2, a3, smoothstep(0.66, 1.00, hh));
-    float m = mix(sA, sB, smoothstep(0.16, 0.50, hh));
-    return mix(m, sC, smoothstep(0.50, 0.84, hh));
-}
-
 // 肤色掩码(YCbCr)。过渡带放宽:窄阈值会把视频噪点放大成彩色斑块
 static inline float skinMaskOf(float3 c) {
     float cb = -0.168736 * c.r - 0.331264 * c.g + 0.5 * c.b;
@@ -68,9 +55,6 @@ float4 hinterBeauty(sampler s, float smoothA, float whitenA, float ruddyA,
     float2 disp = float2(uv.x, 1.0 - uv.y);  // 左上原点(与 face 同基)
     float2 fc = face.xy;
     float2 fr = max(face.zw, float2(0.045)); // 无脸时椭圆≈0 → 几乎不处理
-
-    float3 sc0 = s.sample(uv).rgb;           // 位移前源色(瘦脸的肤色门控)
-    float skinHere = skinMaskOf(sc0);
 
     // ---- 瘦脸:只压缩下颌段(比例缩放)----
     // 纵向带收窄到"嘴以下→下巴":旧版上界到 0.68,把颧骨也压了,

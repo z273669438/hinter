@@ -768,7 +768,7 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
             do {
                 try handler.perform([req])
             } catch {
-                self.diag("det THROW \(error.localizedDescription)")
+                diag("det THROW \(error.localizedDescription)")
                 return
             }
             let tNow = CACurrentMediaTime()
@@ -778,10 +778,10 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
                     $0.boundingBox.width * $0.boundingBox.height <
                         $1.boundingBox.width * $1.boundingBox.height }) {
                     let b = f.boundingBox
-                    self.diag(String(format: "det n=%d bb=(%.3f,%.3f,%.3f,%.3f)",
+                    diag(String(format: "det n=%d bb=(%.3f,%.3f,%.3f,%.3f)",
                                      fs.count, b.minX, b.minY, b.width, b.height))
                 } else {
-                    self.diag("det NONE")
+                    diag("det NONE")
                 }
             }
             guard let faces = req.results, !faces.isEmpty else {
