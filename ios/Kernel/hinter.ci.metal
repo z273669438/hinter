@@ -19,6 +19,20 @@
 
 using namespace metal;
 
+// 半宽轮廓插值(jaw 存全宽,h:0=下巴 → 1=颧骨/额角)。C1 连续跨段 mix,
+// 消除折角——安卓 v43 的"倾斜波纹"正是折角处法线跳变造成的
+static inline float jawHalf(float4 jaw, float hh) {
+    float a0 = jaw.x * 0.5;
+    float a1 = jaw.y * 0.5;
+    float a2 = jaw.z * 0.5;
+    float a3 = jaw.w * 0.5;
+    float sA = mix(a0, a1, smoothstep(0.00, 0.33, hh));
+    float sB = mix(a1, a2, smoothstep(0.33, 0.66, hh));
+    float sC = mix(a2, a3, smoothstep(0.66, 1.00, hh));
+    float m = mix(sA, sB, smoothstep(0.16, 0.50, hh));
+    return mix(m, sC, smoothstep(0.50, 0.84, hh));
+}
+
 // 肤色掩码(YCbCr)。过渡带放宽:窄阈值会把视频噪点放大成彩色斑块
 static inline float skinMaskOf(float3 c) {
     float cb = -0.168736 * c.r - 0.331264 * c.g + 0.5 * c.b;
@@ -56,20 +70,29 @@ float4 hinterBeauty(sampler s, float smoothA, float whitenA, float ruddyA,
     float2 fc = face.xy;
     float2 fr = max(face.zw, float2(0.045)); // 无脸时椭圆≈0 → 几乎不处理
 
-    // ---- 瘦脸:复用磨皮/美白同一套人脸椭圆几何 ----
-    // 历史教训:用 Vision 关键点(jaw)另起一套锚点时,侧脸/俯仰/下巴出画
-    // 都会让压缩带跑到脸上别处;而磨皮掩码用的 fc/fr 一直是对的。
-    // 现在瘦脸与掩码共用 fc/fr → 磨皮落哪,瘦脸就落哪。
-    // vy = (disp.y - fc.y)/fr.y:下半脸 0.5~1.0,下巴≈1.0
+    // ---- 瘦脸:移植安卓 uJaw 方案 ----
+    // jaw = 四级全宽(下巴/下颌角/脸颊/额角),由 Vision faceContour 测得。
+    // 关键:位移量按**该高度的真实半宽 hw** 计算,并沿轮廓法线方向推,
+    // 这样形变带才会贴着下颌线走(用脸框推算会整体偏移,安卓同样踩过)
     if (slimA > 0.001 && faceOn > 0.5) {
-        float2 dd = disp - fc;
-        float vy = dd.y / max(fr.y, 0.02);
-        // vy 标定(设备标注帧实测):椭圆下沿≈下巴 → vy=1.0 是下巴,颌角≈0.65
-        // 压缩带只取 0.50~1.08:颌角→刚过下巴,绝不压到脖子
-        float vBand = smoothstep(0.50, 0.75, vy) * (1.0 - smoothstep(1.02, 1.20, vy));
-        float lateral = 1.0 - smoothstep(0.90, 1.15, fabs(dd.x) / max(fr.x, 0.02));
-        float k = slimA * 0.12 * vBand * lateral;
-        disp.x = fc.x + dd.x * (1.0 + k);   // 向外取样 = 下半脸内收
+        float chinY = fc.y + fr.y * 0.85;      // 左上原点:y 大 = 下
+        float topY  = fc.y - fr.y * 1.05;
+        float hh = clamp((disp.y - chinY) / (topY - chinY), 0.0, 1.0);
+        float hw = max(jawHalf(jaw, hh), 0.04);
+        float dx = disp.x - fc.x;
+        float t = fabs(dx) / hw;
+        float rr = length((disp - fc) / fr);
+        float band = smoothstep(0.25, 1.00, rr) * (1.0 - smoothstep(1.00, 1.45, rr));
+        float vBand = smoothstep(0.00, 0.16, hh) * (1.0 - smoothstep(0.26, 0.50, hh));
+        float lat = smoothstep(0.25, 0.95, t);
+        float e2 = 0.09;
+        float slope = (jawHalf(jaw, min(hh + e2, 1.0)) -
+                       jawHalf(jaw, max(hh - e2, 0.0))) / (2.0 * e2);
+        float inv = rsqrt(1.0 + slope * slope);
+        float sh = slimA * hw * 0.11 * band * vBand * lat;
+        if (dx < 0.0) sh = -sh;
+        disp.x += sh * inv;
+        disp.y -= fabs(sh) * slope * inv * 1.6;
         uv = clamp(float2(disp.x, 1.0 - disp.y), 0.003, 0.997);
     }
 
