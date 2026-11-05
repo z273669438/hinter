@@ -64,11 +64,11 @@ float4 hinterBeauty(sampler s, float smoothA, float whitenA, float ruddyA,
     if (slimA > 0.001 && faceOn > 0.5) {
         float2 dd = disp - fc;
         float vy = dd.y / max(fr.y, 0.02);
-        // vy 标定(来自设备标注帧实测):下巴≈1.5,颌角≈0.6,脖子>1.6
-        // 压缩带取 0.45~1.55,峰值落在下颌线附近,脖子前淡出
-        float vBand = smoothstep(0.45, 0.90, vy) * (1.0 - smoothstep(1.30, 1.55, vy));
+        // vy 标定(设备标注帧实测):椭圆下沿≈下巴 → vy=1.0 是下巴,颌角≈0.65
+        // 压缩带只取 0.50~1.08:颌角→刚过下巴,绝不压到脖子
+        float vBand = smoothstep(0.50, 0.75, vy) * (1.0 - smoothstep(1.02, 1.20, vy));
         float lateral = 1.0 - smoothstep(0.90, 1.15, fabs(dd.x) / max(fr.x, 0.02));
-        float k = slimA * 0.18 * vBand * lateral;
+        float k = slimA * 0.12 * vBand * lateral;
         disp.x = fc.x + dd.x * (1.0 + k);   // 向外取样 = 下半脸内收
         uv = clamp(float2(disp.x, 1.0 - disp.y), 0.003, 0.997);
     }
