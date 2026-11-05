@@ -296,6 +296,8 @@ class HinterCameraPlugin: NSObject, FlutterPlugin {
     private var faceLandmarker: FaceLandmarker?
     private var lmReadyTried = false
     private var lmFailLogged = false
+    private var lmEmptyCount = 0
+    private var lmLogAt: CFTimeInterval = 0
     private var lastDetLog: CFTimeInterval = 0
     private var lastFaceDetect: CFTimeInterval = 0
     private var renderCount: Int64 = 0
@@ -825,9 +827,19 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
             return false
         }
         guard let pts = res?.faceLandmarks.first, pts.count > 460 else {
-            onFaceMiss()
-            return true
+            // 网格没检到脸:交给 Vision 兜底(否则美颜整条链路会静默失效),
+            // 同时限流记录,便于判断 MediaPipe 是否只是偶尔失败
+            self.lmEmptyCount += 1
+            let tNow = CACurrentMediaTime()
+            if tNow - self.lmLogAt > 1.0 {
+                self.lmLogAt = tNow
+                diag("lm empty n=\(res?.faceLandmarks.count ?? -1) "
+                     + "consecutive=\(self.lmEmptyCount) "
+                     + "buf=\(CVPixelBufferGetWidth(pb))x\(CVPixelBufferGetHeight(pb))")
+            }
+            return false
         }
+        lmEmptyCount = 0
         let chin = pts[152], jawL = pts[172], jawR = pts[397]
         let cheekL = pts[234], cheekR = pts[454]
         let templeL = pts[66], templeR = pts[296]
@@ -852,6 +864,13 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
         jawW.z += (wCheek - jawW.z) * kw           // 脸颊宽
         jawW.w += (wTemple - jawW.w) * kw          // 额角宽
         faceRoll += (max(min(roll, 0.8), -0.8) - faceRoll) * 0.35
+        let tLm = CACurrentMediaTime()
+        if tLm - lmLogAt > 1.0 {
+            lmLogAt = tLm
+            diag(String(format: "lm OK pts=%d c=(%.2f,%.2f) r=(%.2f,%.2f) jaw=(%.2f,%.2f,%.2f,%.2f) roll=%.2f",
+                        pts.count, cx, cy, rx, ry,
+                        jawW.x, jawW.y, jawW.z, jawW.w, faceRoll))
+        }
         faceOn = true
         lastFaceOkAt = CACurrentMediaTime()
         return true
