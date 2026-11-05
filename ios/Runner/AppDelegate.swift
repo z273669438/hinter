@@ -289,6 +289,8 @@ class HinterCameraPlugin: NSObject, FlutterPlugin {
     private var jawAnchor = SIMD4<Float>(0.5, 0.74, 0.14, 0.62)
     /// 下颌四级全宽:下巴/下颌角/脸颊/额角(安卓同款,来自 faceContour)
     private var jawW = SIMD4<Float>(0.30, 0.55, 0.85, 0.82)
+    /// 人脸翻滚角(弧度),来自 VNFaceObservation.roll,用于把形变坐标系转正
+    private var faceRoll: Float = 0
     private var lastDetLog: CFTimeInterval = 0
     private var lastFaceDetect: CFTimeInterval = 0
     private var renderCount: Int64 = 0
@@ -888,6 +890,10 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
             self.faceEllipse.y += (cy - self.faceEllipse.y) * k
             self.faceEllipse.z += (rx - self.faceEllipse.z) * k
             self.faceEllipse.w += (ry - self.faceEllipse.w) * k
+            // 人脸翻滚角:设备倾斜/歪头时,形变坐标系必须跟着转
+            if let r = best.roll?.floatValue {
+                self.faceRoll += (r - self.faceRoll) * 0.35
+            }
             self.faceOn = true
             let tNow2 = CACurrentMediaTime()
             // 速度必须用**实测框**算,不能用平滑后的椭圆:
@@ -1009,6 +1015,7 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
                     CIVector(x: 1.0 / max(extent.width, 1),
                              y: 1.0 / max(extent.height, 1)),
                     NSNumber(value: Double(blurR)),
+                    NSNumber(value: Double(faceRoll)),
                 ])
             if let o = out { ci = o }
         } else {

@@ -64,24 +64,26 @@ static inline float3 ringAvg(sampler s, float2 uv, float2 texel, float r) {
 float4 hinterBeauty(sampler s, float smoothA, float whitenA, float ruddyA,
                     float brightA, float satMul, float slimA,
                     float4 face, float faceOn, float4 jaw,
-                    float2 texel, float blurR) {
+                    float2 texel, float blurR, float roll) {
     float2 uv = s.coord();                   // 归一化,左下原点
     float2 disp = float2(uv.x, 1.0 - uv.y);  // 左上原点(与 face 同基)
     float2 fc = face.xy;
     float2 fr = max(face.zw, float2(0.045)); // 无脸时椭圆≈0 → 几乎不处理
 
-    // ---- 瘦脸:移植安卓 uJaw 方案 ----
-    // jaw = 四级全宽(下巴/下颌角/脸颊/额角),由 Vision faceContour 测得。
-    // 关键:位移量按**该高度的真实半宽 hw** 计算,并沿轮廓法线方向推,
-    // 这样形变带才会贴着下颌线走(用脸框推算会整体偏移,安卓同样踩过)
+    // ---- 瘦脸:移植安卓 uJaw 方案 + 人脸翻滚补偿 ----
+    // 关键:形变必须在**脸自己的坐标系**里做。设备倾斜时脸在画面里是歪的,
+    // 若仍用画面水平坐标,压缩带会一头压脸颊一头压脖子,倾斜角一变落点就变
     if (slimA > 0.001 && faceOn > 0.5) {
-        float chinY = fc.y + fr.y * 0.85;      // 左上原点:y 大 = 下
-        float topY  = fc.y - fr.y * 1.05;
-        float hh = clamp((disp.y - chinY) / (topY - chinY), 0.0, 1.0);
+        float cs = cos(roll), sn = sin(roll);
+        float2 d0 = disp - fc;
+        float2 d = float2(cs * d0.x + sn * d0.y,      // 旋转到脸坐标
+                          -sn * d0.x + cs * d0.y);
+        float chinY = fr.y * 0.85;                    // 脸坐标:y 向"下"为正
+        float topY  = -fr.y * 1.05;
+        float hh = clamp((d.y - chinY) / (topY - chinY), 0.0, 1.0);
         float hw = max(jawHalf(jaw, hh), 0.04);
-        float dx = disp.x - fc.x;
-        float t = fabs(dx) / hw;
-        float rr = length((disp - fc) / fr);
+        float t = fabs(d.x) / hw;
+        float rr = length(d / fr);
         float band = smoothstep(0.25, 1.00, rr) * (1.0 - smoothstep(1.00, 1.45, rr));
         float vBand = smoothstep(0.00, 0.16, hh) * (1.0 - smoothstep(0.26, 0.50, hh));
         float lat = smoothstep(0.25, 0.95, t);
@@ -89,11 +91,13 @@ float4 hinterBeauty(sampler s, float smoothA, float whitenA, float ruddyA,
         float slope = (jawHalf(jaw, min(hh + e2, 1.0)) -
                        jawHalf(jaw, max(hh - e2, 0.0))) / (2.0 * e2);
         float inv = rsqrt(1.0 + slope * slope);
-        float sh = slimA * hw * 0.11 * band * vBand * lat;
-        if (dx < 0.0) sh = -sh;
-        disp.x += sh * inv;
-        disp.y -= fabs(sh) * slope * inv * 1.6;
-        uv = clamp(float2(disp.x, 1.0 - disp.y), 0.003, 0.997);
+        float sh = slimA * hw * 0.14 * band * vBand * lat;
+        if (d.x < 0.0) sh = -sh;
+        float2 dOut = float2(d.x + sh * inv,
+                             d.y - fabs(sh) * slope * inv * 1.6);
+        float2 dispOut = float2(cs * dOut.x - sn * dOut.y,   // 转回画面坐标
+                                sn * dOut.x + cs * dOut.y) + fc;
+        uv = clamp(float2(dispOut.x, 1.0 - dispOut.y), 0.003, 0.997);
     }
 
     float4 src = s.sample(uv);
