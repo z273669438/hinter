@@ -2,6 +2,7 @@ import Flutter
 import UIKit
 import AVFoundation
 import CoreImage
+import MediaPipeTasksVision
 import CoreVideo
 import Metal
 import Photos
@@ -291,6 +292,10 @@ class HinterCameraPlugin: NSObject, FlutterPlugin {
     private var jawW = SIMD4<Float>(0.30, 0.55, 0.85, 0.82)
     /// 人脸翻滚角(弧度),来自 VNFaceObservation.roll,用于把形变坐标系转正
     private var faceRoll: Float = 0
+    /// MediaPipe 478 点人脸网格(与安卓 ML Kit FaceMesh 同源)
+    private var faceLandmarker: FaceLandmarker?
+    private var lmReadyTried = false
+    private var lmFailLogged = false
     private var lastDetLog: CFTimeInterval = 0
     private var lastFaceDetect: CFTimeInterval = 0
     private var renderCount: Int64 = 0
@@ -766,6 +771,83 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
         }
     }
 
+    /// 初始化 MediaPipe FaceLandmarker(模型走 Flutter 资源,无需改 Xcode 工程)
+    private func setupLandmarker() {
+        if faceLandmarker != nil || lmReadyTried { return }
+        lmReadyTried = true
+        guard let path = Bundle.main.path(forResource: "assets/face_landmarker.task",
+                                          ofType: nil, inDirectory: "flutter_assets") else {
+            diag("landmarker MODEL NOT FOUND")
+            return
+        }
+        let opts = FaceLandmarkerOptions()
+        opts.baseOptions.modelAssetPath = path
+        opts.runningMode = .video
+        opts.numFaces = 1
+        opts.minFaceDetectionConfidence = 0.3
+        opts.minFacePresenceConfidence = 0.3
+        opts.minTrackingConfidence = 0.3
+        opts.outputFaceBlendshapes = false
+        opts.outputFacialTransformationMatrixes = false
+        do {
+            faceLandmarker = try FaceLandmarker(options: opts)
+            diag("landmarker READY")
+        } catch {
+            diag("landmarker INIT FAIL \(error.localizedDescription)")
+        }
+    }
+
+    /// 用 478 点网格算几何:下巴/下颌角/脸颊/额角宽度 + 中心 + 翻滚角。
+    /// 索引与安卓 ML Kit FaceMesh 完全一致(152/172/397/234/454/66/296)。
+    /// 返回 false 表示这一帧没拿到网格,调用方回退到 Vision。
+    private func runLandmarker(_ pb: CVPixelBuffer) -> Bool {
+        setupLandmarker()
+        guard let lm = faceLandmarker else { return false }
+        let tMs = Int(CACurrentMediaTime() * 1000)
+        var res: FaceLandmarkerResult?
+        do {
+            let img = try MPImage(pixelBuffer: pb)
+            res = try lm.detect(videoFrame: img, timestampInMilliseconds: tMs)
+        } catch {
+            if !lmFailLogged {
+                lmFailLogged = true
+                diag("landmarker detect FAIL \(error.localizedDescription)")
+            }
+            return false
+        }
+        guard let pts = res?.faceLandmarks.first, pts.count > 460 else {
+            onFaceMiss()
+            return true
+        }
+        let chin = pts[152], jawL = pts[172], jawR = pts[397]
+        let cheekL = pts[234], cheekR = pts[454]
+        let templeL = pts[66], templeR = pts[296]
+        let cx = Float((cheekL.x + cheekR.x) * 0.5)
+        let templeMidY = Float((templeL.y + templeR.y) * 0.5)
+        let cy = (templeMidY + chin.y) * 0.5
+        let rx = max(Float(abs(cheekR.x - cheekL.x)) * 0.5, 0.03)
+        let ry = max((chin.y - templeMidY) * 0.5, 0.03)
+        let wJaw = max(Float(abs(jawR.x - jawL.x)), 0.05)
+        let wCheek = max(Float(abs(cheekR.x - cheekL.x)), wJaw)
+        let wTemple = max(Float(abs(templeR.x - templeL.x)), wJaw * 0.8)
+        let roll = atan2(Float(jawR.y - jawL.y), Float(jawR.x - jawL.x))
+
+        let k: Float = 0.5
+        faceEllipse.x += (cx - faceEllipse.x) * k
+        faceEllipse.y += (cy - faceEllipse.y) * k
+        faceEllipse.z += (rx - faceEllipse.z) * k
+        faceEllipse.w += (ry - faceEllipse.w) * k
+        let kw: Float = 0.25
+        jawW.x += (wJaw * 0.55 - jawW.x) * kw      // 下巴宽
+        jawW.y += (wJaw - jawW.y) * kw             // 下颌角宽
+        jawW.z += (wCheek - jawW.z) * kw           // 脸颊宽
+        jawW.w += (wTemple - jawW.w) * kw          // 额角宽
+        faceRoll += (max(min(roll, 0.8), -0.8) - faceRoll) * 0.35
+        faceOn = true
+        lastFaceOkAt = CACurrentMediaTime()
+        return true
+    }
+
     /// Vision 人脸检测(限流 ~10fps,后台队列),结果写入 faceEllipse/faceOn
     private func detectFace(_ pb: CVPixelBuffer) {
         // 节流与状态全部放在串行队列内访问。
@@ -777,6 +859,9 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
             let now = CACurrentMediaTime()
             if now - self.lastFaceDetect < 0.07 { return }
             self.lastFaceDetect = now
+            // 优先 MediaPipe 478 点网格(与安卓同源,下颌角坐标精确且随脸转动);
+            // 拿不到再回退 Vision 矩形检测
+            if self.runLandmarker(pb) { return }
             self.faceTick &+= 1
             // 只跑矩形检测:关键点请求贵一倍以上,而内核瘦脸已改用 fc/fr,
             // 不再需要轮廓点。去掉后检测帧率明显提高 → 转头时掩码不滞后
