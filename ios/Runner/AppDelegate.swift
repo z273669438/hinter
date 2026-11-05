@@ -775,11 +775,20 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
     private func setupLandmarker() {
         if faceLandmarker != nil || lmReadyTried { return }
         lmReadyTried = true
-        guard let path = Bundle.main.path(forResource: "assets/face_landmarker.task",
-                                          ofType: nil, inDirectory: "flutter_assets") else {
-            diag("landmarker MODEL NOT FOUND")
+        // Flutter 资源在 App.framework/flutter_assets 下,不是 Bundle.main 根,
+        // 逐个候选路径探测(不同打包方式位置略有差异)
+        let rel = "assets/face_landmarker.task"
+        let candidates = [
+            Bundle.main.bundlePath + "/Frameworks/App.framework/flutter_assets/" + rel,
+            Bundle.main.bundlePath + "/flutter_assets/" + rel,
+            (Bundle.main.path(forResource: "flutter_assets", ofType: nil) ?? "") + "/" + rel,
+            Bundle.main.path(forResource: rel, ofType: nil) ?? "",
+        ]
+        guard let path = candidates.first(where: { FileManager.default.fileExists(atPath: $0) }) else {
+            diag("landmarker MODEL NOT FOUND tried=\(candidates.joined(separator: " | "))")
             return
         }
+        diag("landmarker model at \(path)")
         let opts = FaceLandmarkerOptions()
         opts.baseOptions.modelAssetPath = path
         opts.runningMode = .video
