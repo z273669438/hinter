@@ -867,6 +867,20 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
                 if let v = widthAt(0.30, 0.10) { w1 = clampW(v, 0.40) }
                 if let v = widthAt(0.62, 0.10) { w2 = clampW(v, 0.70) }
                 if let v = widthAt(0.92, 0.10) { w3 = clampW(v, 0.65) }
+                // 下颌线倾角(脸坐标系 y 向下):取下半轮廓最左/最右两点的连线角。
+                // 比 VNFaceObservation.roll 的符号约定更可靠,且天然随歪头/斜持变化
+                var leftPt: (Float, Float)?
+                var rightPt: (Float, Float)?
+                for (px, py) in pts where py > botY - hgt * 0.45 {
+                    if leftPt == nil || px < leftPt!.0 { leftPt = (px, py) }
+                    if rightPt == nil || px > rightPt!.0 { rightPt = (px, py) }
+                }
+                if let l = leftPt, let r = rightPt, (r.0 - l.0) > hgt * 0.2 {
+                    let ang = atan2(r.1 - l.1, r.0 - l.0)
+                    if abs(ang) < 0.9 {         // 超过 ~50° 判为异常
+                        self.faceRoll += (ang - self.faceRoll) * 0.35
+                    }
+                }
             }
             // EMA 平滑(宽度变化比位置慢,直接 0.25)
             self.jawW.x += (w0 - self.jawW.x) * 0.25
@@ -891,8 +905,8 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
             self.faceEllipse.z += (rx - self.faceEllipse.z) * k
             self.faceEllipse.w += (ry - self.faceEllipse.w) * k
             // 人脸翻滚角:设备倾斜/歪头时,形变坐标系必须跟着转
-            if let r = best.roll?.floatValue {
-                self.faceRoll += (r - self.faceRoll) * 0.35
+            if let r = best.roll?.floatValue, lmObs?.landmarks?.faceContour == nil {
+                self.faceRoll += (-r - self.faceRoll) * 0.20   // 仅在无轮廓时兜底
             }
             self.faceOn = true
             let tNow2 = CACurrentMediaTime()
