@@ -109,7 +109,7 @@ float4 hinterBeauty(sampler s, float smoothA, float whitenA, float ruddyA,
                            dyc / (ryEff * 1.22)));
     float q3 = q.x * q.x * q.x + q.y * q.y * q.y;
     float dMask = pow(max(q3, 0.0), 1.0 / 3.0);
-    float spatialMask = 1.0 - smoothstep(0.92, 1.22, dMask);
+    float spatialMask = 1.0 - smoothstep(0.78, 1.35, dMask);   // 边缘放软:跟随时不露分界线
 
     float m = skinCol * spatialMask * mix(0.45, 1.0, faceOn);
     m *= 1.0 - smoothstep(0.94, 1.00, lum);   // 只让开接近纯白的高光

@@ -853,7 +853,22 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
         let wTemple = max(Float(abs(templeR.x - templeL.x)), wJaw * 0.8)
         let roll = atan2(Float(jawR.y - jawL.y), Float(jawR.x - jawL.x))
 
-        let k: Float = 0.5
+        // 速度用**实测值**估计(前后左右晃动时靠它外推,补偿检测延迟)
+        let tNowLm = CACurrentMediaTime()
+        if lastFaceOkAt > 0 {
+            let dtLm = Float(max(tNowLm - lastFaceOkAt, 0.001))
+            if dtLm < 0.5 {
+                func capv(_ v: Float, _ lim: Float) -> Float { min(max(v, -lim), lim) }
+                let vk: Float = 0.5
+                faceVel.x += (capv((cx - lastMeasured.x) / dtLm, 3.0) - faceVel.x) * vk
+                faceVel.y += (capv((cy - lastMeasured.y) / dtLm, 3.0) - faceVel.y) * vk
+                faceVel.z += (capv((rx - lastMeasured.z) / dtLm, 2.0) - faceVel.z) * vk
+                faceVel.w += (capv((ry - lastMeasured.w) / dtLm, 2.0) - faceVel.w) * vk
+            }
+        }
+        lastMeasured = SIMD4<Float>(cx, cy, rx, ry)
+
+        let k: Float = 0.55
         faceEllipse.x += (cx - faceEllipse.x) * k
         faceEllipse.y += (cy - faceEllipse.y) * k
         faceEllipse.z += (rx - faceEllipse.z) * k
