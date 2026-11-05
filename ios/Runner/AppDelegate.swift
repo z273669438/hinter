@@ -858,18 +858,19 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
         faceEllipse.y += (cy - faceEllipse.y) * k
         faceEllipse.z += (rx - faceEllipse.z) * k
         faceEllipse.w += (ry - faceEllipse.w) * k
-        let kw: Float = 0.25
-        jawW.x += (wJaw * 0.55 - jawW.x) * kw      // 下巴宽
-        jawW.y += (wJaw - jawW.y) * kw             // 下颌角宽
-        jawW.z += (wCheek - jawW.z) * kw           // 脸颊宽
-        jawW.w += (wTemple - jawW.w) * kw          // 额角宽
+        // 下颌锚点直接用网格点:下巴 152、下颌角 172/397
+        let kw: Float = 0.35
+        jawAnchor.x += (chin.x - jawAnchor.x) * kw
+        jawAnchor.y += (chin.y - jawAnchor.y) * kw
+        jawAnchor.z += (((jawL.y + jawR.y) * 0.5) - jawAnchor.z) * kw
+        jawAnchor.w += ((wJaw * 0.5) - jawAnchor.w) * kw
         faceRoll += (max(min(roll, 0.8), -0.8) - faceRoll) * 0.35
         let tLm = CACurrentMediaTime()
         if tLm - lmLogAt > 1.0 {
             lmLogAt = tLm
             diag(String(format: "lm OK pts=%d c=(%.2f,%.2f) r=(%.2f,%.2f) jaw=(%.2f,%.2f,%.2f,%.2f) roll=%.2f",
                         pts.count, cx, cy, rx, ry,
-                        jawW.x, jawW.y, jawW.z, jawW.w, faceRoll))
+                        jawAnchor.x, jawAnchor.y, jawAnchor.z, jawAnchor.w, faceRoll))
         }
         faceOn = true
         lastFaceOkAt = CACurrentMediaTime()
@@ -995,11 +996,15 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
                     }
                 }
             }
-            // EMA 平滑(宽度变化比位置慢,直接 0.25)
-            self.jawW.x += (w0 - self.jawW.x) * 0.25
-            self.jawW.y += (w1 - self.jawW.y) * 0.25
-            self.jawW.z += (w2 - self.jawW.z) * 0.25
-            self.jawW.w += (w3 - self.jawW.w) * 0.25
+            // Vision 兜底:按框推算下颌锚点(下巴=框下沿7%,下颌角=框中部,半宽=0.6框半宽)
+            let boxHv = ry / 0.62
+            let vChinY = cy + boxHv * 0.50
+            let vJawTop = cy + boxHv * 0.08
+            let vJawHW = w1 * 0.5
+            self.jawAnchor.x += (cx - self.jawAnchor.x) * 0.25
+            self.jawAnchor.y += (vChinY - self.jawAnchor.y) * 0.25
+            self.jawAnchor.z += (vJawTop - self.jawAnchor.z) * 0.25
+            self.jawAnchor.w += (vJawHW - self.jawAnchor.w) * 0.25
 
             // 位置/尺寸突变都要阻尼:Vision 偶发把框检成一半大小(rx 0.37→0.17),
             // 单帧采纳会让美颜区突然缩到脸中间,观感就是"不跟脸"
@@ -1122,8 +1127,9 @@ extension HinterCameraPlugin: AVCaptureVideoDataOutputSampleBufferDelegate,
         // 美颜:单输入 Metal 通用核(模糊在核内做,避免第二输入图坐标错位)
         if let kernel = beautyKernel {
             // jaw = (chinX, chinY, jawHalfW, jawTopY) 左上原点归一化
-            let jaw = CIVector(x: CGFloat(jawW.x), y: CGFloat(jawW.y),
-                               z: CGFloat(jawW.z), w: CGFloat(jawW.w))
+            // jaw = (chinX, chinY, jawCornerY, jawHalfW)
+            let jaw = CIVector(x: CGFloat(jawAnchor.x), y: CGFloat(jawAnchor.y),
+                               z: CGFloat(jawAnchor.z), w: CGFloat(jawAnchor.w))
             let out = kernel.apply(
                 extent: extent,
                 roiCallback: { _, r in r.insetBy(dx: -48, dy: -48) },
